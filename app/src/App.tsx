@@ -174,6 +174,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [connected, setConnected] = useState(false)
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
+  const [isGenerating, setIsGenerating] = useState(false)
   const socketRef = useRef<WebSocket | null>(null)
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -211,8 +212,45 @@ function App() {
     ws.addEventListener("open", () => setConnected(true))
     ws.addEventListener("close", () => setConnected(false))
     ws.addEventListener("message", (event) => {
-      const message: ChatMessage = JSON.parse(event.data)
-      setMessages((prev) => [...prev, message])
+      const data: { type: "message"; message: ChatMessage } | { type: "delta"; id: string; content: string } =
+        JSON.parse(event.data)
+
+      if (data.type === "delta") {
+        setIsGenerating(true)
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === data.id)
+          if (idx === -1) {
+            return [
+              ...prev,
+              {
+                id: data.id,
+                thread_id: activeThreadId,
+                role: "assistant",
+                content: data.content,
+                created_at: Date.now(),
+              },
+            ]
+          }
+          const next = [...prev]
+          next[idx] = { ...next[idx], content: next[idx].content + data.content }
+          return next
+        })
+        return
+      }
+
+      const { message } = data
+      if (message.role === "assistant") {
+        setIsGenerating(false)
+      }
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === message.id)
+        if (idx === -1) {
+          return [...prev, message]
+        }
+        const next = [...prev]
+        next[idx] = message
+        return next
+      })
     })
 
     return () => {
@@ -341,7 +379,10 @@ function App() {
             </PromptInputBody>
             <PromptInputFooter>
               <PromptInputTools />
-              <PromptInputSubmit status={connected ? "ready" : "submitted"} disabled={!connected} />
+              <PromptInputSubmit
+                status={!connected ? "submitted" : isGenerating ? "streaming" : "ready"}
+                disabled={!connected}
+              />
             </PromptInputFooter>
           </PromptInput>
         </div>
