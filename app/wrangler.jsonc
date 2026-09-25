@@ -23,6 +23,14 @@
 			"database_name": "context-db",
 			"database_id": "a3288da1-6748-4594-91ee-da58b070243d"
 		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["ChatThreadDO"] }
 	]
 	/**
 	 * Smart Placement

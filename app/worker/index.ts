@@ -1,3 +1,7 @@
+import { ChatThreadDO } from "./chat-thread.js";
+
+export { ChatThreadDO };
+
 // TODO(step 8 - Access): replace with the authenticated user's id from the
 // Cf-Access-Jwt-Assertion header instead of a hardcoded dev user.
 const DEV_USER_ID = "dev-user";
@@ -7,6 +11,14 @@ interface Thread {
   title: string;
   created_at: number;
   updated_at: number;
+}
+
+interface ThreadMessage {
+  id: string;
+  thread_id: string;
+  role: string;
+  content: string;
+  created_at: number;
 }
 
 async function listThreads(env: Env): Promise<Response> {
@@ -35,6 +47,16 @@ async function createThread(request: Request, env: Env): Promise<Response> {
   return Response.json(thread, { status: 201 });
 }
 
+async function getThreadMessages(threadId: string, env: Env): Promise<Response> {
+  const { results } = await env.DB.prepare(
+    "SELECT id, thread_id, role, content, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
+  )
+    .bind(threadId)
+    .all<ThreadMessage>();
+
+  return Response.json(results);
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -45,6 +67,17 @@ export default {
       }
       if (request.method === "POST") {
         return createThread(request, env);
+      }
+    }
+
+    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages)$/);
+    if (threadMatch) {
+      const [, threadId, action] = threadMatch;
+      if (action === "messages" && request.method === "GET") {
+        return getThreadMessages(threadId, env);
+      }
+      if (action === "ws") {
+        return env.CHAT_THREAD.getByName(threadId).fetch(request);
       }
     }
 
