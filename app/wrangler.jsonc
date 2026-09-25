@@ -16,7 +16,14 @@
 		"logs": { "enabled": true, "head_sampling_rate": 1 },
 		"traces": { "enabled": true, "head_sampling_rate": 1 }
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "context-db",
+			"database_id": "a3288da1-6748-4594-91ee-da58b070243d"
+		}
+	]
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
