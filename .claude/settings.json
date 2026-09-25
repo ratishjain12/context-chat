@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/mac/Desktop/oss/context/.claude/check-kb-reload.sh",
+            "statusMessage": "Checking KB pending..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/mac/Desktop/oss/context/.claude/load-knowledge.sh",
+            "statusMessage": "Loading knowledge base..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/mac/Desktop/oss/context/.claude/save-pending-kb.sh",
+            "statusMessage": "Saving KB update queue..."
+          }
+        ]
+      }
+    ]
+  }
+}
