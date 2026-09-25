@@ -1,4 +1,5 @@
 import { ChatThreadDO } from "./chat-thread.js";
+import { ruleForFilename, type FileCategory } from "./file-types.js";
 
 export { ChatThreadDO };
 
@@ -18,6 +19,7 @@ interface AttachmentInfo {
   filename: string;
   mime_type: string;
   size_bytes: number;
+  category: FileCategory;
 }
 
 interface ThreadMessage {
@@ -63,7 +65,7 @@ async function getThreadMessages(threadId: string, env: Env): Promise<Response> 
       .bind(threadId)
       .all<ThreadMessage>(),
     env.DB.prepare(
-      "SELECT id, message_id, filename, mime_type, size_bytes FROM attachments WHERE thread_id = ? AND message_id IS NOT NULL"
+      "SELECT id, message_id, filename, mime_type, size_bytes, category FROM attachments WHERE thread_id = ? AND message_id IS NOT NULL"
     )
       .bind(threadId)
       .all<AttachmentInfo & { message_id: string }>(),
@@ -72,11 +74,12 @@ async function getThreadMessages(threadId: string, env: Env): Promise<Response> 
   for (const message of messages) {
     const forMessage = attachments.filter((a) => a.message_id === message.id);
     if (forMessage.length > 0) {
-      message.attachments = forMessage.map(({ id, filename, mime_type, size_bytes }) => ({
+      message.attachments = forMessage.map(({ id, filename, mime_type, size_bytes, category }) => ({
         id,
         filename,
         mime_type,
         size_bytes,
+        category,
       }));
     }
   }
@@ -90,6 +93,7 @@ interface Attachment {
   filename: string;
   mime_type: string;
   size_bytes: number;
+  category: FileCategory;
   created_at: number;
 }
 
@@ -97,6 +101,7 @@ interface FileProcessingMessage {
   attachmentId: string;
   r2Key: string;
   mimeType: string;
+  category: FileCategory;
 }
 
 async function uploadAttachment(
@@ -109,26 +114,49 @@ async function uploadAttachment(
   }
 
   const filename = request.headers.get("X-Filename") || "upload";
-  const mimeType = request.headers.get("Content-Type") || "application/octet-stream";
+  const rule = ruleForFilename(filename);
+  if (!rule) {
+    return Response.json({ error: `Unsupported file type: ${filename}` }, { status: 415 });
+  }
+
+  // Content-Length is a soft check (a client could omit or lie about it) --
+  // acceptable for now since nothing here is authenticated yet either (Step 8).
+  const contentLength = Number(request.headers.get("Content-Length") ?? 0);
+  if (contentLength > rule.maxBytes) {
+    return Response.json(
+      { error: `File too large: max ${Math.round(rule.maxBytes / (1024 * 1024))}MB for this type` },
+      { status: 413 }
+    );
+  }
+
   const id = crypto.randomUUID();
   const r2Key = `threads/${threadId}/${id}-${filename}`;
 
   // Stream straight into R2 rather than buffering the whole file in memory.
+  // Trust our own rule's mimeType, not the client's Content-Type header --
+  // browsers report it inconsistently for some extensions (.md especially).
   const object = await env.UPLOADS.put(r2Key, request.body, {
-    httpMetadata: { contentType: mimeType },
+    httpMetadata: { contentType: rule.mimeType },
   });
 
   const attachment = await env.DB.prepare(
-    `INSERT INTO attachments (id, thread_id, r2_key, filename, mime_type, size_bytes)
-     VALUES (?, ?, ?, ?, ?, ?)
-     RETURNING id, thread_id, filename, mime_type, size_bytes, created_at`
+    `INSERT INTO attachments (id, thread_id, r2_key, filename, mime_type, size_bytes, category)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     RETURNING id, thread_id, filename, mime_type, size_bytes, category, created_at`
   )
-    .bind(id, threadId, r2Key, filename, mimeType, object.size)
+    .bind(id, threadId, r2Key, filename, rule.mimeType, object.size, rule.category)
     .first<Attachment>();
 
-  // Decoupled from the response -- processing (Step 6: chunk + embed) happens
-  // async in the queue consumer, not inline in the upload request.
-  await env.FILE_QUEUE.send({ attachmentId: id, r2Key, mimeType } satisfies FileProcessingMessage);
+  // Images need no processing -- they go straight to the model as multimodal
+  // input (Step 7). Only documents/data need the extraction pipeline.
+  if (rule.category !== "image") {
+    await env.FILE_QUEUE.send({
+      attachmentId: id,
+      r2Key,
+      mimeType: rule.mimeType,
+      category: rule.category,
+    } satisfies FileProcessingMessage);
+  }
 
   return Response.json(attachment, { status: 201 });
 }
@@ -163,25 +191,34 @@ async function processAttachment(job: FileProcessingMessage, env: Env): Promise<
     throw new Error(`R2 object not found: ${job.r2Key}`);
   }
 
-  // TODO(step 6 - Vectorize): chunk the extracted text and store embeddings.
-  if (job.mimeType.startsWith("text/")) {
+  // txt/md/csv are plain text already -- no parsing library needed.
+  // pdf/docx need a real extraction library; that's the next piece of Step 6,
+  // not this validation/routing pass.
+  const isPlainText = job.mimeType === "text/plain" || job.mimeType === "text/markdown" || job.mimeType === "text/csv";
+
+  if (isPlainText) {
     const text = await object.text();
     console.log(
       JSON.stringify({
-        message: "processed text attachment",
+        message: "extracted text",
         attachmentId: job.attachmentId,
+        category: job.category,
         chars: text.length,
+        // TODO(step 6 continued): if chars is large, chunk + embed into
+        // Vectorize; otherwise this text gets inlined directly into the
+        // prompt at chat time.
       })
     );
-  } else {
-    console.log(
-      JSON.stringify({
-        message: "queued non-text attachment for future embedding pipeline",
-        attachmentId: job.attachmentId,
-        mimeType: job.mimeType,
-      })
-    );
+    return;
   }
+
+  console.log(
+    JSON.stringify({
+      message: "extraction not yet implemented for this format",
+      attachmentId: job.attachmentId,
+      mimeType: job.mimeType,
+    })
+  );
 }
 
 export default {

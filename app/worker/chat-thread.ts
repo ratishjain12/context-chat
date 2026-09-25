@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import type { FileCategory } from "./file-types.js";
 
 interface IncomingMessage {
   content: string;
@@ -10,6 +11,7 @@ interface AttachmentInfo {
   filename: string;
   mime_type: string;
   size_bytes: number;
+  category: FileCategory;
 }
 
 interface ChatMessage {
@@ -108,7 +110,7 @@ export class ChatThreadDO extends DurableObject<Env> {
       .run();
 
     const { results } = await this.env.DB.prepare(
-      `SELECT id, filename, mime_type, size_bytes FROM attachments WHERE message_id = ?`
+      `SELECT id, filename, mime_type, size_bytes, category FROM attachments WHERE message_id = ?`
     )
       .bind(messageId)
       .all<AttachmentInfo>();

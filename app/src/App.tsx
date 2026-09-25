@@ -32,6 +32,7 @@ import {
   usePromptInputAttachments,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
+import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@/lib/file-types"
 
 interface Thread {
   id: string
@@ -45,6 +46,7 @@ interface AttachmentInfo {
   filename: string
   mime_type: string
   size_bytes: number
+  category: FileCategory
 }
 
 interface ChatMessage {
@@ -75,6 +77,7 @@ function AttachmentBar({
   const { files, remove, openFileDialog } = usePromptInputAttachments()
   const uploaded = useRef(new Map<string, AttachmentInfo>())
   const uploading = useRef(new Set<string>())
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const currentIds = new Set(files.map((f) => f.id))
@@ -88,27 +91,42 @@ function AttachmentBar({
       if (uploaded.current.has(file.id) || uploading.current.has(file.id)) {
         continue
       }
+
+      const filename = file.filename ?? "upload"
+      const rule = ruleForFilename(filename)
+      if (!rule) {
+        setError(`${filename}: unsupported file type`)
+        remove(file.id)
+        continue
+      }
+
       uploading.current.add(file.id)
 
       fetch(file.url)
         .then((res) => res.blob())
-        .then((blob) =>
-          fetch(`/api/threads/${threadId}/attachments`, {
+        .then((blob) => {
+          if (blob.size > rule.maxBytes) {
+            throw new Error(`${filename}: too large (max ${Math.round(rule.maxBytes / (1024 * 1024))}MB)`)
+          }
+          return fetch(`/api/threads/${threadId}/attachments`, {
             method: "POST",
-            headers: {
-              "X-Filename": file.filename ?? "upload",
-              "Content-Type": file.mediaType || blob.type || "application/octet-stream",
-            },
+            headers: { "X-Filename": filename, "Content-Type": rule.mimeType },
             body: blob,
           })
-        )
-        .then((res) => res.json())
+        })
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error(`${filename}: upload failed`)
+          }
+          return res.json()
+        })
         .then((attachment: AttachmentInfo) => {
+          setError(null)
           uploaded.current.set(file.id, attachment)
           onChange([...uploaded.current.values()])
         })
         .catch((err) => {
-          console.error("attachment upload failed", err)
+          setError(err instanceof Error ? err.message : `${filename}: upload failed`)
           remove(file.id)
         })
         .finally(() => {
@@ -121,28 +139,31 @@ function AttachmentBar({
   }, [files])
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <Button
-        type="button"
-        size="icon"
-        variant="ghost"
-        className="size-8"
-        aria-label="Attach file"
-        onClick={openFileDialog}
-      >
-        <Paperclip className="size-4" />
-      </Button>
-      {files.map((file) => (
-        <span
-          key={file.id}
-          className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs"
+    <div className="flex w-full flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="size-8"
+          aria-label="Attach file"
+          onClick={openFileDialog}
         >
-          {file.filename}
-          <button type="button" onClick={() => remove(file.id)} aria-label={`Remove ${file.filename}`}>
-            <X className="size-3" />
-          </button>
-        </span>
-      ))}
+          <Paperclip className="size-4" />
+        </Button>
+        {files.map((file) => (
+          <span
+            key={file.id}
+            className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs"
+          >
+            {file.filename}
+            <button type="button" onClick={() => remove(file.id)} aria-label={`Remove ${file.filename}`}>
+              <X className="size-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+      {error && <p className="px-1 text-xs text-destructive">{error}</p>}
     </div>
   )
 }
@@ -300,7 +321,13 @@ function App() {
         </Conversation>
 
         <div className="border-t border-border p-4">
-          <PromptInput onSubmit={handleSubmit} multiple className="mx-auto max-w-2xl">
+          <PromptInput
+            onSubmit={handleSubmit}
+            multiple
+            accept={ACCEPTED_MIME_TYPES}
+            maxFileSize={20 * 1024 * 1024}
+            className="mx-auto max-w-2xl"
+          >
             <PromptInputHeader>
               {activeThreadId && (
                 <AttachmentBar threadId={activeThreadId} onChange={setPendingAttachments} />
