@@ -29,6 +29,12 @@
 			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" }
 		]
 	},
+	"r2_buckets": [
+		{
+			"binding": "UPLOADS",
+			"bucket_name": "context-uploads"
+		}
+	],
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["ChatThreadDO"] }
 	]

@@ -57,6 +57,69 @@ async function getThreadMessages(threadId: string, env: Env): Promise<Response> 
   return Response.json(results);
 }
 
+interface Attachment {
+  id: string;
+  thread_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: number;
+}
+
+async function uploadAttachment(
+  request: Request,
+  threadId: string,
+  env: Env
+): Promise<Response> {
+  if (!request.body) {
+    return Response.json({ error: "Missing file body" }, { status: 400 });
+  }
+
+  const filename = request.headers.get("X-Filename") || "upload";
+  const mimeType = request.headers.get("Content-Type") || "application/octet-stream";
+  const id = crypto.randomUUID();
+  const r2Key = `threads/${threadId}/${id}-${filename}`;
+
+  // Stream straight into R2 rather than buffering the whole file in memory.
+  const object = await env.UPLOADS.put(r2Key, request.body, {
+    httpMetadata: { contentType: mimeType },
+  });
+
+  const attachment = await env.DB.prepare(
+    `INSERT INTO attachments (id, thread_id, r2_key, filename, mime_type, size_bytes)
+     VALUES (?, ?, ?, ?, ?, ?)
+     RETURNING id, thread_id, filename, mime_type, size_bytes, created_at`
+  )
+    .bind(id, threadId, r2Key, filename, mimeType, object.size)
+    .first<Attachment>();
+
+  return Response.json(attachment, { status: 201 });
+}
+
+async function getAttachment(id: string, env: Env): Promise<Response> {
+  const row = await env.DB.prepare(
+    "SELECT r2_key, filename, mime_type FROM attachments WHERE id = ?"
+  )
+    .bind(id)
+    .first<{ r2_key: string; filename: string; mime_type: string }>();
+
+  if (!row) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const object = await env.UPLOADS.get(row.r2_key);
+  if (!object) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": row.mime_type,
+      "Content-Disposition": `inline; filename="${row.filename}"`,
+    },
+  });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -70,7 +133,7 @@ export default {
       }
     }
 
-    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages)$/);
+    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages|attachments)$/);
     if (threadMatch) {
       const [, threadId, action] = threadMatch;
       if (action === "messages" && request.method === "GET") {
@@ -79,6 +142,14 @@ export default {
       if (action === "ws") {
         return env.CHAT_THREAD.getByName(threadId).fetch(request);
       }
+      if (action === "attachments" && request.method === "POST") {
+        return uploadAttachment(request, threadId, env);
+      }
+    }
+
+    const attachmentMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)$/);
+    if (attachmentMatch && request.method === "GET") {
+      return getAttachment(attachmentMatch[1], env);
     }
 
     if (url.pathname.startsWith("/api/")) {
