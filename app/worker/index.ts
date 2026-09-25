@@ -13,12 +13,20 @@ interface Thread {
   updated_at: number;
 }
 
+interface AttachmentInfo {
+  id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+}
+
 interface ThreadMessage {
   id: string;
   thread_id: string;
   role: string;
   content: string;
   created_at: number;
+  attachments?: AttachmentInfo[];
 }
 
 async function listThreads(env: Env): Promise<Response> {
@@ -48,13 +56,32 @@ async function createThread(request: Request, env: Env): Promise<Response> {
 }
 
 async function getThreadMessages(threadId: string, env: Env): Promise<Response> {
-  const { results } = await env.DB.prepare(
-    "SELECT id, thread_id, role, content, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
-  )
-    .bind(threadId)
-    .all<ThreadMessage>();
+  const [{ results: messages }, { results: attachments }] = await Promise.all([
+    env.DB.prepare(
+      "SELECT id, thread_id, role, content, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
+    )
+      .bind(threadId)
+      .all<ThreadMessage>(),
+    env.DB.prepare(
+      "SELECT id, message_id, filename, mime_type, size_bytes FROM attachments WHERE thread_id = ? AND message_id IS NOT NULL"
+    )
+      .bind(threadId)
+      .all<AttachmentInfo & { message_id: string }>(),
+  ]);
 
-  return Response.json(results);
+  for (const message of messages) {
+    const forMessage = attachments.filter((a) => a.message_id === message.id);
+    if (forMessage.length > 0) {
+      message.attachments = forMessage.map(({ id, filename, mime_type, size_bytes }) => ({
+        id,
+        filename,
+        mime_type,
+        size_bytes,
+      }));
+    }
+  }
+
+  return Response.json(messages);
 }
 
 interface Attachment {

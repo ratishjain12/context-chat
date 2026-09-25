@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { MessageSquarePlus } from "lucide-react"
+import { MessageSquarePlus, Paperclip, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Sidebar,
@@ -25,9 +25,11 @@ import {
   PromptInput,
   PromptInputBody,
   PromptInputFooter,
+  PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
+  usePromptInputAttachments,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
 
@@ -38,12 +40,20 @@ interface Thread {
   updated_at: number
 }
 
+interface AttachmentInfo {
+  id: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+}
+
 interface ChatMessage {
   id: string
   thread_id: string
   role: "user" | "assistant" | "system"
   content: string
   created_at: number
+  attachments?: AttachmentInfo[]
 }
 
 function socketUrl(threadId: string): string {
@@ -51,11 +61,98 @@ function socketUrl(threadId: string): string {
   return `${protocol}//${location.host}/api/threads/${threadId}/ws`
 }
 
+// Lives inside <PromptInput> to reach its attachment context. Uploads each
+// picked file to R2 as soon as it's added (not on send) -- the message that
+// will reference it doesn't exist yet, so attachments start unlinked and get
+// tied to a message id only once the chat message is actually sent.
+function AttachmentBar({
+  threadId,
+  onChange,
+}: {
+  threadId: string
+  onChange: (attachments: AttachmentInfo[]) => void
+}) {
+  const { files, remove, openFileDialog } = usePromptInputAttachments()
+  const uploaded = useRef(new Map<string, AttachmentInfo>())
+  const uploading = useRef(new Set<string>())
+
+  useEffect(() => {
+    const currentIds = new Set(files.map((f) => f.id))
+    for (const id of uploaded.current.keys()) {
+      if (!currentIds.has(id)) {
+        uploaded.current.delete(id)
+      }
+    }
+
+    for (const file of files) {
+      if (uploaded.current.has(file.id) || uploading.current.has(file.id)) {
+        continue
+      }
+      uploading.current.add(file.id)
+
+      fetch(file.url)
+        .then((res) => res.blob())
+        .then((blob) =>
+          fetch(`/api/threads/${threadId}/attachments`, {
+            method: "POST",
+            headers: {
+              "X-Filename": file.filename ?? "upload",
+              "Content-Type": file.mediaType || blob.type || "application/octet-stream",
+            },
+            body: blob,
+          })
+        )
+        .then((res) => res.json())
+        .then((attachment: AttachmentInfo) => {
+          uploaded.current.set(file.id, attachment)
+          onChange([...uploaded.current.values()])
+        })
+        .catch((err) => {
+          console.error("attachment upload failed", err)
+          remove(file.id)
+        })
+        .finally(() => {
+          uploading.current.delete(file.id)
+        })
+    }
+
+    onChange([...uploaded.current.values()])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files])
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="size-8"
+        aria-label="Attach file"
+        onClick={openFileDialog}
+      >
+        <Paperclip className="size-4" />
+      </Button>
+      {files.map((file) => (
+        <span
+          key={file.id}
+          className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs"
+        >
+          {file.filename}
+          <button type="button" onClick={() => remove(file.id)} aria-label={`Remove ${file.filename}`}>
+            <X className="size-3" />
+          </button>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function App() {
   const [threads, setThreads] = useState<Thread[]>([])
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [connected, setConnected] = useState(false)
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
   const socketRef = useRef<WebSocket | null>(null)
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -111,10 +208,16 @@ function App() {
   }
 
   const handleSubmit = (message: PromptInputMessage) => {
-    if (!message.text.trim() || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+    const hasText = message.text.trim().length > 0
+    if ((!hasText && pendingAttachments.length === 0) || socketRef.current?.readyState !== WebSocket.OPEN) {
       return
     }
-    socketRef.current.send(JSON.stringify({ content: message.text }))
+    socketRef.current.send(
+      JSON.stringify({
+        content: message.text,
+        attachmentIds: pendingAttachments.map((a) => a.id),
+      })
+    )
   }
 
   const activeThread = threads.find((t) => t.id === activeThreadId)
@@ -175,7 +278,19 @@ function App() {
               messages.map((message) => (
                 <Message from={message.role} key={message.id}>
                   <MessageContent>
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+                    {message.attachments?.map((attachment) => (
+                      <a
+                        key={attachment.id}
+                        href={`/api/attachments/${attachment.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex w-fit items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <Paperclip className="size-3" />
+                        {attachment.filename}
+                      </a>
+                    ))}
                   </MessageContent>
                 </Message>
               ))
@@ -185,7 +300,12 @@ function App() {
         </Conversation>
 
         <div className="border-t border-border p-4">
-          <PromptInput onSubmit={handleSubmit} className="mx-auto max-w-2xl">
+          <PromptInput onSubmit={handleSubmit} multiple className="mx-auto max-w-2xl">
+            <PromptInputHeader>
+              {activeThreadId && (
+                <AttachmentBar threadId={activeThreadId} onChange={setPendingAttachments} />
+              )}
+            </PromptInputHeader>
             <PromptInputBody>
               <PromptInputTextarea
                 placeholder={connected ? "Message…" : "Connecting…"}

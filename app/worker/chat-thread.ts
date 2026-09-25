@@ -2,6 +2,14 @@ import { DurableObject } from "cloudflare:workers";
 
 interface IncomingMessage {
   content: string;
+  attachmentIds?: string[];
+}
+
+interface AttachmentInfo {
+  id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
 }
 
 interface ChatMessage {
@@ -10,6 +18,7 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   created_at: number;
+  attachments?: AttachmentInfo[];
 }
 
 // One instance per thread (routed via env.CHAT_THREAD.getByName(threadId)).
@@ -38,8 +47,8 @@ export class ChatThreadDO extends DurableObject<Env> {
       return;
     }
 
-    const { content } = JSON.parse(raw) as IncomingMessage;
-    const userMessage = await this.persistMessage(threadId, "user", content);
+    const { content, attachmentIds } = JSON.parse(raw) as IncomingMessage;
+    const userMessage = await this.persistMessage(threadId, "user", content, attachmentIds);
     this.broadcast(userMessage);
 
     // Placeholder reply — real model streaming arrives in Step 7 (AI Gateway).
@@ -58,7 +67,8 @@ export class ChatThreadDO extends DurableObject<Env> {
   private async persistMessage(
     threadId: string,
     role: ChatMessage["role"],
-    content: string
+    content: string,
+    attachmentIds?: string[]
   ): Promise<ChatMessage> {
     const id = crypto.randomUUID();
     const row = await this.env.DB.prepare(
@@ -76,7 +86,34 @@ export class ChatThreadDO extends DurableObject<Env> {
     if (!row) {
       throw new Error("Failed to persist message");
     }
+
+    if (attachmentIds && attachmentIds.length > 0) {
+      row.attachments = await this.linkAttachments(id, threadId, attachmentIds);
+    }
+
     return row;
+  }
+
+  private async linkAttachments(
+    messageId: string,
+    threadId: string,
+    attachmentIds: string[]
+  ): Promise<AttachmentInfo[]> {
+    const placeholders = attachmentIds.map(() => "?").join(",");
+
+    await this.env.DB.prepare(
+      `UPDATE attachments SET message_id = ? WHERE thread_id = ? AND id IN (${placeholders})`
+    )
+      .bind(messageId, threadId, ...attachmentIds)
+      .run();
+
+    const { results } = await this.env.DB.prepare(
+      `SELECT id, filename, mime_type, size_bytes FROM attachments WHERE message_id = ?`
+    )
+      .bind(messageId)
+      .all<AttachmentInfo>();
+
+    return results;
   }
 
   private broadcast(message: ChatMessage): void {
