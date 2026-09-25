@@ -1,5 +1,6 @@
 import { ChatThreadDO } from "./chat-thread.js";
 import { ruleForFilename, type FileCategory } from "./file-types.js";
+import { indexDocument, searchDocuments } from "./rag.js";
 
 export { ChatThreadDO };
 
@@ -99,6 +100,7 @@ interface Attachment {
 
 interface FileProcessingMessage {
   attachmentId: string;
+  threadId: string;
   r2Key: string;
   mimeType: string;
   category: FileCategory;
@@ -152,6 +154,7 @@ async function uploadAttachment(
   if (rule.category !== "image") {
     await env.FILE_QUEUE.send({
       attachmentId: id,
+      threadId,
       r2Key,
       mimeType: rule.mimeType,
       category: rule.category,
@@ -192,31 +195,28 @@ async function processAttachment(job: FileProcessingMessage, env: Env): Promise<
   }
 
   // txt/md/csv are plain text already -- no parsing library needed.
-  // pdf/docx need a real extraction library; that's the next piece of Step 6,
-  // not this validation/routing pass.
+  // pdf/docx need a real extraction library; not implemented yet.
   const isPlainText = job.mimeType === "text/plain" || job.mimeType === "text/markdown" || job.mimeType === "text/csv";
 
-  if (isPlainText) {
-    const text = await object.text();
+  if (!isPlainText) {
     console.log(
       JSON.stringify({
-        message: "extracted text",
+        message: "extraction not yet implemented for this format",
         attachmentId: job.attachmentId,
-        category: job.category,
-        chars: text.length,
-        // TODO(step 6 continued): if chars is large, chunk + embed into
-        // Vectorize; otherwise this text gets inlined directly into the
-        // prompt at chat time.
+        mimeType: job.mimeType,
       })
     );
     return;
   }
 
+  const text = await object.text();
+  const result = await indexDocument(env, job.attachmentId, job.threadId, text);
   console.log(
     JSON.stringify({
-      message: "extraction not yet implemented for this format",
+      message: "indexed document",
       attachmentId: job.attachmentId,
-      mimeType: job.mimeType,
+      chars: text.length,
+      ...result,
     })
   );
 }
@@ -234,7 +234,7 @@ export default {
       }
     }
 
-    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages|attachments)$/);
+    const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages|attachments|search)$/);
     if (threadMatch) {
       const [, threadId, action] = threadMatch;
       if (action === "messages" && request.method === "GET") {
@@ -245,6 +245,13 @@ export default {
       }
       if (action === "attachments" && request.method === "POST") {
         return uploadAttachment(request, threadId, env);
+      }
+      if (action === "search" && request.method === "GET") {
+        const query = url.searchParams.get("q");
+        if (!query) {
+          return Response.json({ error: "Missing ?q=" }, { status: 400 });
+        }
+        return Response.json(await searchDocuments(env, threadId, query));
       }
     }
 

@@ -7,14 +7,22 @@
 	"name": "context",
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-09-25",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
 	"observability": {
 		"enabled": true,
-		"logs": { "enabled": true, "head_sampling_rate": 1 },
-		"traces": { "enabled": true, "head_sampling_rate": 1 }
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1
+		},
+		"traces": {
+			"enabled": true,
+			"head_sampling_rate": 1
+		}
 	},
 	"upload_source_maps": true,
 	"d1_databases": [
@@ -26,7 +34,10 @@
 	],
 	"durable_objects": {
 		"bindings": [
-			{ "name": "CHAT_THREAD", "class_name": "ChatThreadDO" }
+			{
+				"name": "CHAT_THREAD",
+				"class_name": "ChatThreadDO"
+			}
 		]
 	},
 	"r2_buckets": [
@@ -37,7 +48,10 @@
 	],
 	"queues": {
 		"producers": [
-			{ "binding": "FILE_QUEUE", "queue": "context-file-processing" }
+			{
+				"binding": "FILE_QUEUE",
+				"queue": "context-file-processing"
+			}
 		],
 		"consumers": [
 			{
@@ -50,8 +64,22 @@
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["ChatThreadDO"] }
-	]
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"ChatThreadDO"
+			]
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "context-documents"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	}
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
