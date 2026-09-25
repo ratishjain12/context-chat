@@ -35,6 +35,20 @@
 			"bucket_name": "context-uploads"
 		}
 	],
+	"queues": {
+		"producers": [
+			{ "binding": "FILE_QUEUE", "queue": "context-file-processing" }
+		],
+		"consumers": [
+			{
+				"queue": "context-file-processing",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "context-file-processing-dlq"
+			}
+		]
+	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["ChatThreadDO"] }
 	]

@@ -93,6 +93,12 @@ interface Attachment {
   created_at: number;
 }
 
+interface FileProcessingMessage {
+  attachmentId: string;
+  r2Key: string;
+  mimeType: string;
+}
+
 async function uploadAttachment(
   request: Request,
   threadId: string,
@@ -120,6 +126,10 @@ async function uploadAttachment(
     .bind(id, threadId, r2Key, filename, mimeType, object.size)
     .first<Attachment>();
 
+  // Decoupled from the response -- processing (Step 6: chunk + embed) happens
+  // async in the queue consumer, not inline in the upload request.
+  await env.FILE_QUEUE.send({ attachmentId: id, r2Key, mimeType } satisfies FileProcessingMessage);
+
   return Response.json(attachment, { status: 201 });
 }
 
@@ -145,6 +155,33 @@ async function getAttachment(id: string, env: Env): Promise<Response> {
       "Content-Disposition": `inline; filename="${row.filename}"`,
     },
   });
+}
+
+async function processAttachment(job: FileProcessingMessage, env: Env): Promise<void> {
+  const object = await env.UPLOADS.get(job.r2Key);
+  if (!object) {
+    throw new Error(`R2 object not found: ${job.r2Key}`);
+  }
+
+  // TODO(step 6 - Vectorize): chunk the extracted text and store embeddings.
+  if (job.mimeType.startsWith("text/")) {
+    const text = await object.text();
+    console.log(
+      JSON.stringify({
+        message: "processed text attachment",
+        attachmentId: job.attachmentId,
+        chars: text.length,
+      })
+    );
+  } else {
+    console.log(
+      JSON.stringify({
+        message: "queued non-text attachment for future embedding pipeline",
+        attachmentId: job.attachmentId,
+        mimeType: job.mimeType,
+      })
+    );
+  }
 }
 
 export default {
@@ -185,4 +222,21 @@ export default {
 
     return new Response(null, { status: 404 });
   },
-} satisfies ExportedHandler<Env>;
+
+  async queue(batch, env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        await processAttachment(message.body, env);
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            message: "file processing failed, retrying",
+            attachmentId: message.body.attachmentId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        );
+        message.retry();
+      }
+    }
+  },
+} satisfies ExportedHandler<Env, FileProcessingMessage>;
