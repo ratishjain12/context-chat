@@ -1,49 +1,99 @@
-import { Plus, Send } from "lucide-react"
+import { MessageSquarePlus } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
-import { Textarea } from "@/components/ui/textarea"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar"
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation"
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+  type PromptInputMessage,
+} from "@/components/ai-elements/prompt-input"
+
+const THREADS = [{ id: "1", title: "New chat" }]
 
 function App() {
-  return (
-    <div className="flex h-svh bg-background text-foreground">
-      <aside className="flex w-64 flex-col border-r border-border">
-        <div className="flex items-center justify-between p-3">
-          <span className="text-sm font-medium">Threads</span>
-          <Button size="icon" variant="ghost" aria-label="New thread">
-            <Plus className="size-4" />
-          </Button>
-        </div>
-        <Separator />
-        <ScrollArea className="flex-1">
-          <div className="flex flex-col gap-1 p-2 text-sm text-muted-foreground">
-            <button className="rounded-md px-2 py-1.5 text-left hover:bg-accent hover:text-accent-foreground">
-              New chat
-            </button>
-          </div>
-        </ScrollArea>
-      </aside>
+  const handleSubmit = (message: PromptInputMessage) => {
+    // TODO: wire up once the Worker/D1/Durable Object chat endpoint exists
+    console.log(message)
+  }
 
-      <main className="flex flex-1 flex-col">
-        <ScrollArea className="flex-1">
-          <div className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
-            <p className="text-sm text-muted-foreground">Start a conversation.</p>
+  return (
+    <SidebarProvider>
+      <Sidebar>
+        <SidebarHeader>
+          <div className="flex items-center justify-between px-1 py-1">
+            <span className="text-sm font-semibold">Threads</span>
+            <Button size="icon" variant="ghost" className="size-7" aria-label="New thread">
+              <MessageSquarePlus className="size-4" />
+            </Button>
           </div>
-        </ScrollArea>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {THREADS.map((thread) => (
+                  <SidebarMenuItem key={thread.id}>
+                    <SidebarMenuButton isActive={thread.id === "1"}>
+                      {thread.title}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+      </Sidebar>
+
+      <SidebarInset>
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <SidebarTrigger />
+          <span className="text-sm text-muted-foreground">New chat</span>
+        </header>
+
+        <Conversation>
+          <ConversationContent>
+            <ConversationEmptyState
+              title="Start a conversation"
+              description="Send a message to begin"
+            />
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
 
         <div className="border-t border-border p-4">
-          <form
-            className="mx-auto flex max-w-2xl items-end gap-2"
-            onSubmit={(e) => e.preventDefault()}
-          >
-            <Textarea placeholder="Message..." className="min-h-11 flex-1 resize-none" rows={1} />
-            <Button type="submit" size="icon" aria-label="Send message">
-              <Send className="size-4" />
-            </Button>
-          </form>
+          <PromptInput onSubmit={handleSubmit} className="mx-auto max-w-2xl">
+            <PromptInputBody>
+              <PromptInputTextarea />
+            </PromptInputBody>
+            <PromptInputFooter>
+              <PromptInputTools />
+              <PromptInputSubmit status="ready" />
+            </PromptInputFooter>
+          </PromptInput>
         </div>
-      </main>
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }
 
