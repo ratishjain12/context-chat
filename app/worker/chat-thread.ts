@@ -8,6 +8,12 @@ import { DEFAULT_MODEL, findModel, isValidModel } from "../shared/models.js";
 // a catalog description like the rest of the vision-flagged models.
 const VERIFIED_VISION_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
 
+// Titling is a side task, not the conversation itself -- cheapest text
+// model in the catalog ($0.027/M in, $0.201/M out) rather than whatever
+// the user picked for the actual chat.
+const TITLE_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+const TITLE_MAX_LENGTH = 60;
+
 // Routed through AI Gateway ("default" -- auto-creates on first request, no
 // dashboard step needed; a custom-named gateway would require one).
 const GATEWAY_ID = "default";
@@ -40,7 +46,8 @@ interface ChatMessage {
 
 type OutboundEvent =
   | { type: "message"; message: ChatMessage }
-  | { type: "delta"; id: string; content: string };
+  | { type: "delta"; id: string; content: string }
+  | { type: "thread_title"; threadId: string; title: string };
 
 // One instance per thread (routed via env.CHAT_THREAD.getByName(threadId)).
 // Owns WebSocket fanout + message ordering for that thread; D1 stays the
@@ -72,12 +79,71 @@ export class ChatThreadDO extends DurableObject<Env> {
     const userMessage = await this.persistMessage(threadId, "user", content, attachmentIds);
     this.broadcast({ type: "message", message: userMessage });
 
-    await this.generateReply(
-      threadId,
-      content,
-      model && isValidModel(model) ? model : DEFAULT_MODEL,
-      attachmentIds ?? []
-    );
+    // Run concurrently, not sequentially -- titling is a side effect that
+    // shouldn't delay the reply the user is actually waiting on.
+    await Promise.all([
+      this.maybeGenerateTitle(threadId, content),
+      this.generateReply(
+        threadId,
+        content,
+        model && isValidModel(model) ? model : DEFAULT_MODEL,
+        attachmentIds ?? []
+      ),
+    ]);
+  }
+
+  // Only fires once, on the thread's first message -- a title is a stable
+  // sidebar label, not a running summary that should keep changing as the
+  // conversation grows.
+  private async maybeGenerateTitle(threadId: string, firstMessage: string): Promise<void> {
+    if (!firstMessage.trim()) {
+      return;
+    }
+
+    const row = await this.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM messages WHERE thread_id = ?"
+    )
+      .bind(threadId)
+      .first<{ count: number }>();
+    if (row?.count !== 1) {
+      return;
+    }
+
+    try {
+      const { response } = await this.env.AI.run(
+        TITLE_MODEL,
+        {
+          messages: [
+            {
+              role: "system",
+              content:
+                "Summarize the user's message as a short chat title: 3-6 words, plain text, no punctuation, no quotes.",
+            },
+            { role: "user", content: firstMessage },
+          ],
+          max_tokens: 16,
+        },
+        { gateway: { id: GATEWAY_ID } }
+      );
+
+      const title = cleanTitle(response);
+      if (!title) {
+        return;
+      }
+
+      await this.env.DB.prepare("UPDATE threads SET title = ? WHERE id = ?")
+        .bind(title, threadId)
+        .run();
+      this.broadcast({ type: "thread_title", threadId, title });
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          message: "title generation failed",
+          threadId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      );
+    }
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
@@ -302,6 +368,24 @@ export class ChatThreadDO extends DurableObject<Env> {
       ws.send(payload);
     }
   }
+}
+
+// Small instruct models routinely wrap their answer in quotes or add a
+// trailing period even when told not to -- strip that rather than showing
+// `"Fix login bug"` verbatim in the sidebar.
+function cleanTitle(response: string | undefined): string | null {
+  if (!response) {
+    return null;
+  }
+  const title = response
+    .trim()
+    .replace(/^["'“”]+|["'“”]+$/g, "")
+    .replace(/[.!]+$/, "")
+    .trim();
+  if (!title) {
+    return null;
+  }
+  return title.length > TITLE_MAX_LENGTH ? `${title.slice(0, TITLE_MAX_LENGTH - 1)}…` : title;
 }
 
 // btoa/String.fromCharCode can't take the whole buffer as spread args at

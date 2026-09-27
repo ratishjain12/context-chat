@@ -216,8 +216,17 @@ function App() {
     ws.addEventListener("open", () => setConnected(true))
     ws.addEventListener("close", () => setConnected(false))
     ws.addEventListener("message", (event) => {
-      const data: { type: "message"; message: ChatMessage } | { type: "delta"; id: string; content: string } =
-        JSON.parse(event.data)
+      const data:
+        | { type: "message"; message: ChatMessage }
+        | { type: "delta"; id: string; content: string }
+        | { type: "thread_title"; threadId: string; title: string } = JSON.parse(event.data)
+
+      if (data.type === "thread_title") {
+        setThreads((prev) =>
+          prev.map((t) => (t.id === data.threadId ? { ...t, title: data.title } : t))
+        )
+        return
+      }
 
       if (data.type === "delta") {
         setIsGenerating(true)
