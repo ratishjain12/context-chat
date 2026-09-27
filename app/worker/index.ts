@@ -28,6 +28,7 @@ interface ThreadMessage {
   thread_id: string;
   role: string;
   content: string;
+  model: string | null;
   created_at: number;
   attachments?: AttachmentInfo[];
 }
@@ -61,7 +62,7 @@ async function createThread(request: Request, env: Env): Promise<Response> {
 async function getThreadMessages(threadId: string, env: Env): Promise<Response> {
   const [{ results: messages }, { results: attachments }] = await Promise.all([
     env.DB.prepare(
-      "SELECT id, thread_id, role, content, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
+      "SELECT id, thread_id, role, content, model, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
     )
       .bind(threadId)
       .all<ThreadMessage>(),

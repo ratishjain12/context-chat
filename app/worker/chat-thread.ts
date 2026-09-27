@@ -1,13 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import type { FileCategory } from "./file-types.js";
 import { searchDocuments } from "./rag.js";
+import { DEFAULT_MODEL, isValidModel } from "./models.js";
 
 // Routed through AI Gateway ("default" -- auto-creates on first request, no
-// dashboard step needed; a custom-named gateway would require one). Workers
-// AI model, not an external provider -- zero extra API keys to add
-// OpenAI/Anthropic/Gemini later, add their key as a secret and call their
-// AI Gateway provider route instead of env.AI.run() for this specific model.
-const CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+// dashboard step needed; a custom-named gateway would require one).
 const GATEWAY_ID = "default";
 const HISTORY_LIMIT = 20;
 const RAG_MATCH_THRESHOLD = 0.5;
@@ -15,6 +12,7 @@ const RAG_MATCH_THRESHOLD = 0.5;
 interface IncomingMessage {
   content: string;
   attachmentIds?: string[];
+  model?: string;
 }
 
 interface AttachmentInfo {
@@ -30,6 +28,7 @@ interface ChatMessage {
   thread_id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  model: string | null;
   created_at: number;
   attachments?: AttachmentInfo[];
 }
@@ -64,18 +63,18 @@ export class ChatThreadDO extends DurableObject<Env> {
       return;
     }
 
-    const { content, attachmentIds } = JSON.parse(raw) as IncomingMessage;
+    const { content, attachmentIds, model } = JSON.parse(raw) as IncomingMessage;
     const userMessage = await this.persistMessage(threadId, "user", content, attachmentIds);
     this.broadcast({ type: "message", message: userMessage });
 
-    await this.generateReply(threadId, content);
+    await this.generateReply(threadId, content, model && isValidModel(model) ? model : DEFAULT_MODEL);
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     ws.close(code, reason);
   }
 
-  private async generateReply(threadId: string, latestContent: string): Promise<void> {
+  private async generateReply(threadId: string, latestContent: string, model: string): Promise<void> {
     const [history, context] = await Promise.all([
       this.getHistory(threadId),
       this.buildContext(threadId, latestContent),
@@ -90,11 +89,13 @@ export class ChatThreadDO extends DurableObject<Env> {
     let fullText = "";
 
     try {
+      // env.AI.run()'s overloads resolve per literal model id; a dynamic
+      // model string (switchable at runtime) can't select one statically.
       const stream = (await this.env.AI.run(
-        CHAT_MODEL,
+        model,
         { messages, stream: true },
         { gateway: { id: GATEWAY_ID } }
-      )) as ReadableStream;
+      )) as unknown as ReadableStream;
 
       for await (const chunk of parseSSE(stream)) {
         fullText += chunk;
@@ -106,6 +107,7 @@ export class ChatThreadDO extends DurableObject<Env> {
         JSON.stringify({
           message: "AI generation failed",
           threadId,
+          model,
           error: err instanceof Error ? err.message : String(err),
         })
       );
@@ -116,7 +118,8 @@ export class ChatThreadDO extends DurableObject<Env> {
       "assistant",
       fullText,
       undefined,
-      assistantId
+      assistantId,
+      model
     );
     this.broadcast({ type: "message", message: assistantMessage });
   }
@@ -170,13 +173,14 @@ export class ChatThreadDO extends DurableObject<Env> {
     role: ChatMessage["role"],
     content: string,
     attachmentIds?: string[],
-    explicitId?: string
+    explicitId?: string,
+    model?: string
   ): Promise<ChatMessage> {
     const id = explicitId ?? crypto.randomUUID();
     const row = await this.env.DB.prepare(
-      "INSERT INTO messages (id, thread_id, role, content) VALUES (?, ?, ?, ?) RETURNING id, thread_id, role, content, created_at"
+      "INSERT INTO messages (id, thread_id, role, content, model) VALUES (?, ?, ?, ?, ?) RETURNING id, thread_id, role, content, model, created_at"
     )
-      .bind(id, threadId, role, content)
+      .bind(id, threadId, role, content, model ?? null)
       .first<ChatMessage>();
 
     await this.env.DB.prepare(

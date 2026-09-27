@@ -26,6 +26,11 @@ import {
   PromptInputBody,
   PromptInputFooter,
   PromptInputHeader,
+  PromptInputSelect,
+  PromptInputSelectContent,
+  PromptInputSelectItem,
+  PromptInputSelectTrigger,
+  PromptInputSelectValue,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
@@ -33,6 +38,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
 import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@/lib/file-types"
+import { DEFAULT_MODEL, MODELS } from "@/lib/models"
 
 interface Thread {
   id: string
@@ -54,6 +60,7 @@ interface ChatMessage {
   thread_id: string
   role: "user" | "assistant" | "system"
   content: string
+  model?: string | null
   created_at: number
   attachments?: AttachmentInfo[]
 }
@@ -175,6 +182,7 @@ function App() {
   const [connected, setConnected] = useState(false)
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL)
   const socketRef = useRef<WebSocket | null>(null)
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -275,6 +283,7 @@ function App() {
       JSON.stringify({
         content: message.text,
         attachmentIds: pendingAttachments.map((a) => a.id),
+        model: selectedModel,
       })
     )
   }
@@ -338,6 +347,11 @@ function App() {
                 <Message from={message.role} key={message.id}>
                   <MessageContent>
                     {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+                    {message.model && (
+                      <span className="text-xs text-muted-foreground">
+                        {MODELS.find((m) => m.id === message.model)?.label ?? message.model}
+                      </span>
+                    )}
                     {message.attachments?.map((attachment) => (
                       <a
                         key={attachment.id}
@@ -378,7 +392,20 @@ function App() {
               />
             </PromptInputBody>
             <PromptInputFooter>
-              <PromptInputTools />
+              <PromptInputTools>
+                <PromptInputSelect value={selectedModel} onValueChange={setSelectedModel}>
+                  <PromptInputSelectTrigger>
+                    <PromptInputSelectValue />
+                  </PromptInputSelectTrigger>
+                  <PromptInputSelectContent>
+                    {MODELS.map((model) => (
+                      <PromptInputSelectItem key={model.id} value={model.id}>
+                        {model.label}
+                      </PromptInputSelectItem>
+                    ))}
+                  </PromptInputSelectContent>
+                </PromptInputSelect>
+              </PromptInputTools>
               <PromptInputSubmit
                 status={!connected ? "submitted" : isGenerating ? "streaming" : "ready"}
                 disabled={!connected}
