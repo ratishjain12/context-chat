@@ -38,7 +38,7 @@ import {
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
 import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@/lib/file-types"
-import { DEFAULT_MODEL, MODELS } from "@/lib/models"
+import { DEFAULT_MODEL, MODELS, VISION_MODEL } from "@/lib/models"
 
 interface Thread {
   id: string
@@ -349,7 +349,7 @@ function App() {
                     {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
                     {message.model && (
                       <span className="text-xs text-muted-foreground">
-                        {MODELS.find((m) => m.id === message.model)?.label ?? message.model}
+                        {[...MODELS, VISION_MODEL].find((m) => m.id === message.model)?.label ?? message.model}
                       </span>
                     )}
                     {message.attachments?.map((attachment) => (

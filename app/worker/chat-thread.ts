@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { FileCategory } from "./file-types.js";
 import { searchDocuments } from "./rag.js";
-import { DEFAULT_MODEL, isValidModel } from "./models.js";
+import { DEFAULT_MODEL, VISION_MODEL, isValidModel } from "./models.js";
 
 // Routed through AI Gateway ("default" -- auto-creates on first request, no
 // dashboard step needed; a custom-named gateway would require one).
@@ -67,22 +67,52 @@ export class ChatThreadDO extends DurableObject<Env> {
     const userMessage = await this.persistMessage(threadId, "user", content, attachmentIds);
     this.broadcast({ type: "message", message: userMessage });
 
-    await this.generateReply(threadId, content, model && isValidModel(model) ? model : DEFAULT_MODEL);
+    await this.generateReply(
+      threadId,
+      content,
+      model && isValidModel(model) ? model : DEFAULT_MODEL,
+      attachmentIds ?? []
+    );
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     ws.close(code, reason);
   }
 
-  private async generateReply(threadId: string, latestContent: string, model: string): Promise<void> {
-    const [history, context] = await Promise.all([
+  private async generateReply(
+    threadId: string,
+    latestContent: string,
+    model: string,
+    attachmentIds: string[]
+  ): Promise<void> {
+    const [history, context, imageParts] = await Promise.all([
       this.getHistory(threadId),
       this.buildContext(threadId, latestContent),
+      this.buildImageParts(attachmentIds),
     ]);
+
+    // A text model literally cannot see an image -- route to the vision
+    // model regardless of what was selected rather than send images to a
+    // model that will just ignore them.
+    const effectiveModel = imageParts.length > 0 ? VISION_MODEL : model;
+
+    type ChatTurn = {
+      role: string;
+      content: string | { type: string; text?: string; image_url?: { url: string } }[];
+    };
+    const turns: ChatTurn[] = history;
+
+    if (imageParts.length > 0) {
+      const last = turns[turns.length - 1];
+      turns[turns.length - 1] = {
+        role: last.role,
+        content: [{ type: "text", text: last.content as string }, ...imageParts],
+      };
+    }
 
     const messages = [
       { role: "system", content: context ?? "You are a helpful assistant." },
-      ...history,
+      ...turns,
     ];
 
     const assistantId = crypto.randomUUID();
@@ -92,7 +122,7 @@ export class ChatThreadDO extends DurableObject<Env> {
       // env.AI.run()'s overloads resolve per literal model id; a dynamic
       // model string (switchable at runtime) can't select one statically.
       const stream = (await this.env.AI.run(
-        model,
+        effectiveModel,
         { messages, stream: true },
         { gateway: { id: GATEWAY_ID } }
       )) as unknown as ReadableStream;
@@ -107,7 +137,7 @@ export class ChatThreadDO extends DurableObject<Env> {
         JSON.stringify({
           message: "AI generation failed",
           threadId,
-          model,
+          model: effectiveModel,
           error: err instanceof Error ? err.message : String(err),
         })
       );
@@ -119,14 +149,12 @@ export class ChatThreadDO extends DurableObject<Env> {
       fullText,
       undefined,
       assistantId,
-      model
+      effectiveModel
     );
     this.broadcast({ type: "message", message: assistantMessage });
   }
 
-  private async getHistory(
-    threadId: string
-  ): Promise<{ role: string; content: string }[]> {
+  private async getHistory(threadId: string): Promise<{ role: string; content: string }[]> {
     const { results } = await this.env.DB.prepare(
       "SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?"
     )
@@ -134,6 +162,37 @@ export class ChatThreadDO extends DurableObject<Env> {
       .all<{ role: string; content: string }>();
 
     return results.reverse();
+  }
+
+  // Images upload to R2 before the message is sent (Step 4's upload-before-
+  // send flow), so by the time we're generating a reply they're already
+  // there -- just fetch the bytes and base64-encode as a data URI (the
+  // vision model's image_url field requires a data URI; plain HTTP URLs
+  // are rejected).
+  private async buildImageParts(
+    attachmentIds: string[]
+  ): Promise<{ type: string; image_url: { url: string } }[]> {
+    if (attachmentIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = attachmentIds.map(() => "?").join(",");
+    const { results } = await this.env.DB.prepare(
+      `SELECT r2_key, mime_type FROM attachments WHERE id IN (${placeholders}) AND category = 'image'`
+    )
+      .bind(...attachmentIds)
+      .all<{ r2_key: string; mime_type: string }>();
+
+    const parts: { type: string; image_url: { url: string } }[] = [];
+    for (const row of results) {
+      const object = await this.env.UPLOADS.get(row.r2_key);
+      if (!object) {
+        continue;
+      }
+      const base64 = arrayBufferToBase64(await object.arrayBuffer());
+      parts.push({ type: "image_url", image_url: { url: `data:${row.mime_type};base64,${base64}` } });
+    }
+    return parts;
   }
 
   // Pulls in short-document text (always inlineable, per the file-format
@@ -228,6 +287,20 @@ export class ChatThreadDO extends DurableObject<Env> {
       ws.send(payload);
     }
   }
+}
+
+// btoa/String.fromCharCode can't take the whole buffer as spread args at
+// once (blows the call stack for anything past a few tens of KB) -- chunk
+// it. Avoids pulling in @types/node just for Buffer, which would conflict
+// with Workers' own global fetch/Request/Response types.
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 // Workers AI's streaming format: `data: {"response": "token"}\n\n` lines,
