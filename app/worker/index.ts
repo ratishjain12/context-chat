@@ -59,6 +59,37 @@ async function createThread(request: Request, env: Env): Promise<Response> {
   return Response.json(thread, { status: 201 });
 }
 
+// No ON DELETE CASCADE in the schema, so this mirrors the same
+// R2 -> Vectorize -> D1 cleanup order as cleanupOrphanedAttachments below --
+// storage first, rows last, so a mid-failure retry re-finds the same
+// attachment rows instead of leaking orphaned R2 objects/vectors.
+async function deleteThread(threadId: string, env: Env): Promise<Response> {
+  const { results: attachments } = await env.DB.prepare(
+    "SELECT id, r2_key, chunk_count FROM attachments WHERE thread_id = ?"
+  )
+    .bind(threadId)
+    .all<{ id: string; r2_key: string; chunk_count: number }>();
+
+  if (attachments.length > 0) {
+    await env.UPLOADS.delete(attachments.map((a) => a.r2_key));
+
+    const vectorIds = attachments.flatMap((a) =>
+      Array.from({ length: a.chunk_count }, (_, i) => `${a.id}-${i}`)
+    );
+    if (vectorIds.length > 0) {
+      await env.VECTORIZE.deleteByIds(vectorIds);
+    }
+  }
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM attachments WHERE thread_id = ?").bind(threadId),
+    env.DB.prepare("DELETE FROM messages WHERE thread_id = ?").bind(threadId),
+    env.DB.prepare("DELETE FROM threads WHERE id = ?").bind(threadId),
+  ]);
+
+  return new Response(null, { status: 204 });
+}
+
 async function getThreadMessages(threadId: string, env: Env): Promise<Response> {
   const [{ results: messages }, { results: attachments }] = await Promise.all([
     env.DB.prepare(
@@ -278,6 +309,11 @@ export default {
       if (request.method === "POST") {
         return createThread(request, env);
       }
+    }
+
+    const threadIdMatch = url.pathname.match(/^\/api\/threads\/([^/]+)$/);
+    if (threadIdMatch && request.method === "DELETE") {
+      return deleteThread(threadIdMatch[1], env);
     }
 
     const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/(ws|messages|attachments|search)$/);

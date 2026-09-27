@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { MessageSquarePlus, Paperclip, X } from "lucide-react"
+import { MessageSquarePlus, Paperclip, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Sidebar,
@@ -9,6 +9,7 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
@@ -279,6 +280,30 @@ function App() {
     selectThread(thread.id)
   }
 
+  const handleDeleteThread = async (threadId: string) => {
+    if (!confirm("Delete this thread? This can't be undone.")) {
+      return
+    }
+
+    await fetch(`/api/threads/${threadId}`, { method: "DELETE" })
+    const remaining = threads.filter((t) => t.id !== threadId)
+    setThreads(remaining)
+
+    if (threadId !== activeThreadId) {
+      return
+    }
+
+    if (remaining.length > 0) {
+      selectThread(remaining[0].id)
+      return
+    }
+
+    const res = await fetch("/api/threads", { method: "POST" })
+    const thread: Thread = await res.json()
+    setThreads([thread])
+    selectThread(thread.id)
+  }
+
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = message.text.trim().length > 0
     if ((!hasText && pendingAttachments.length === 0) || socketRef.current?.readyState !== WebSocket.OPEN) {
@@ -324,6 +349,16 @@ function App() {
                     >
                       {thread.title}
                     </SidebarMenuButton>
+                    <SidebarMenuAction
+                      showOnHover
+                      aria-label={`Delete ${thread.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteThread(thread.id)
+                      }}
+                    >
+                      <Trash2 />
+                    </SidebarMenuAction>
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>
