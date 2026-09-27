@@ -14,6 +14,8 @@ import {
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import {
   createContext,
@@ -313,11 +315,32 @@ export const MessageBranchPage = ({
   );
 };
 
-// MessageResponse (Streamdown-based markdown/code/math/mermaid rendering) was
-// removed here -- it pulled in Shiki (every language) and Mermaid (every
-// diagram type) unconditionally, ~1.5MB of JS, for a chat app with no
-// markdown content yet. Re-add a trimmed version once Step 7 gives us real
-// model output worth formatting.
+export type MessageResponseProps = HTMLAttributes<HTMLDivElement> & {
+  children: string;
+};
+
+// Trimmed re-add of the Streamdown-based renderer removed earlier -- that
+// pulled in Shiki (every language) and Mermaid (every diagram type)
+// unconditionally, ~1.5MB of JS, for a chat app with no markdown content
+// yet. react-markdown + remark-gfm covers bold/lists/tables/code fences at
+// a fraction of the size; syntax highlighting and diagram rendering can be
+// added later if a model response actually needs them.
+export const MessageResponse = ({
+  className,
+  children,
+  ...props
+}: MessageResponseProps) => (
+  <div
+    className={cn(
+      "prose prose-sm max-w-none dark:prose-invert",
+      "prose-p:my-2 prose-pre:bg-muted prose-pre:text-foreground first:prose-p:mt-0 last:prose-p:mb-0",
+      className
+    )}
+    {...props}
+  >
+    <Markdown remarkPlugins={[remarkGfm]}>{children}</Markdown>
+  </div>
+);
 
 export type MessageToolbarProps = ComponentProps<"div">;
 

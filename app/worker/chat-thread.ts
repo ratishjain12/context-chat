@@ -127,9 +127,12 @@ export class ChatThreadDO extends DurableObject<Env> {
     try {
       // env.AI.run()'s overloads resolve per literal model id; a dynamic
       // model string (switchable at runtime) can't select one statically.
+      // Without an explicit max_tokens, several catalog models default to a
+      // low cap (well under what a multi-paragraph answer needs) and just
+      // stop mid-sentence with no error -- not a stream bug, a token limit.
       const stream = (await this.env.AI.run(
         effectiveModel,
-        { messages, stream: true },
+        { messages, stream: true, max_tokens: 2048 },
         { gateway: { id: GATEWAY_ID } }
       )) as unknown as ReadableStream;
 

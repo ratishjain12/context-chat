@@ -20,7 +20,7 @@ import {
   ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
-import { Message, MessageContent } from "@/components/ai-elements/message"
+import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message"
 import {
   PromptInput,
   PromptInputBody,
@@ -342,7 +342,7 @@ function App() {
               messages.map((message) => (
                 <Message from={message.role} key={message.id}>
                   <MessageContent>
-                    {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+                    {message.content && <MessageResponse>{message.content}</MessageResponse>}
                     {message.model && (
                       <span className="text-xs text-muted-foreground">
                         {message.model.split("/").pop()}

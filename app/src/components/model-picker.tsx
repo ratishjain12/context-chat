@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { defaultFilter } from "cmdk"
 import { Eye, Brain, Wrench, ChevronsUpDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -89,6 +89,7 @@ export function ModelPicker({
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
+  const listRef = useRef<HTMLDivElement>(null)
   const current = findModel(value)
 
   const searchResults = useMemo(() => {
@@ -100,6 +101,14 @@ export function ModelPicker({
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.model)
   }, [search])
+
+  // The results list is the same scrollable DOM node across re-renders, so
+  // without this it stays scrolled wherever the previous (longer) result
+  // set left it -- the new top match ends up above the fold instead of
+  // visible right away.
+  useEffect(() => {
+    listRef.current?.querySelector("[cmdk-list]")?.scrollTo({ top: 0 })
+  }, [search, open])
 
   function selectModel(id: string) {
     onChange(id)
@@ -126,7 +135,7 @@ export function ModelPicker({
           <ChevronsUpDown className="size-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-96 p-0">
+      <PopoverContent side="top" align="start" className="w-96 p-0" ref={listRef}>
         <Command shouldFilter={false}>
           <CommandInput placeholder="Search models..." value={search} onValueChange={setSearch} />
           <CommandList>
