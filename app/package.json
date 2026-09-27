@@ -9,7 +9,8 @@
 		"lint": "oxlint",
 		"preview": "pnpm run build && vite preview",
 		"deploy": "pnpm run build && wrangler deploy",
-		"cf-typegen": "wrangler types"
+		"cf-typegen": "wrangler types",
+		"models:sync": "node scripts/sync-models.mjs"
 	},
 	"dependencies": {
 		"@fontsource-variable/geist": "^5.3.0",

@@ -26,19 +26,15 @@ import {
   PromptInputBody,
   PromptInputFooter,
   PromptInputHeader,
-  PromptInputSelect,
-  PromptInputSelectContent,
-  PromptInputSelectItem,
-  PromptInputSelectTrigger,
-  PromptInputSelectValue,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
   usePromptInputAttachments,
   type PromptInputMessage,
 } from "@/components/ai-elements/prompt-input"
-import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@/lib/file-types"
-import { DEFAULT_MODEL, MODELS, VISION_MODEL } from "@/lib/models"
+import { ModelPicker } from "@/components/model-picker"
+import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@shared/file-types"
+import { DEFAULT_MODEL } from "@shared/models"
 
 interface Thread {
   id: string
@@ -349,7 +345,7 @@ function App() {
                     {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
                     {message.model && (
                       <span className="text-xs text-muted-foreground">
-                        {[...MODELS, VISION_MODEL].find((m) => m.id === message.model)?.label ?? message.model}
+                        {message.model.split("/").pop()}
                       </span>
                     )}
                     {message.attachments?.map((attachment) => (
@@ -393,18 +389,7 @@ function App() {
             </PromptInputBody>
             <PromptInputFooter>
               <PromptInputTools>
-                <PromptInputSelect value={selectedModel} onValueChange={setSelectedModel}>
-                  <PromptInputSelectTrigger>
-                    <PromptInputSelectValue />
-                  </PromptInputSelectTrigger>
-                  <PromptInputSelectContent>
-                    {MODELS.map((model) => (
-                      <PromptInputSelectItem key={model.id} value={model.id}>
-                        {model.label}
-                      </PromptInputSelectItem>
-                    ))}
-                  </PromptInputSelectContent>
-                </PromptInputSelect>
+                <ModelPicker value={selectedModel} onChange={setSelectedModel} />
               </PromptInputTools>
               <PromptInputSubmit
                 status={!connected ? "submitted" : isGenerating ? "streaming" : "ready"}

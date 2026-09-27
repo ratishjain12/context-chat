@@ -1,5 +1,5 @@
 import { ChatThreadDO } from "./chat-thread.js";
-import { ruleForFilename, type FileCategory } from "./file-types.js";
+import { ruleForFilename, type FileCategory } from "../shared/file-types.js";
 import { indexDocument, searchDocuments } from "./rag.js";
 
 export { ChatThreadDO };

@@ -1,7 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
-import type { FileCategory } from "./file-types.js";
+import type { FileCategory } from "../shared/file-types.js";
 import { searchDocuments } from "./rag.js";
-import { DEFAULT_MODEL, VISION_MODEL, isValidModel } from "./models.js";
+import { DEFAULT_MODEL, findModel, isValidModel } from "../shared/models.js";
+
+// Fallback when the selected model can't handle images -- the one vision
+// model we've actually verified end-to-end (Step 7), not just inferred from
+// a catalog description like the rest of the vision-flagged models.
+const VERIFIED_VISION_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
 
 // Routed through AI Gateway ("default" -- auto-creates on first request, no
 // dashboard step needed; a custom-named gateway would require one).
@@ -91,10 +96,11 @@ export class ChatThreadDO extends DurableObject<Env> {
       this.buildImageParts(attachmentIds),
     ]);
 
-    // A text model literally cannot see an image -- route to the vision
-    // model regardless of what was selected rather than send images to a
-    // model that will just ignore them.
-    const effectiveModel = imageParts.length > 0 ? VISION_MODEL : model;
+    // A model without vision support cannot see an image -- if the selected
+    // model doesn't have it, fall back to the one we've actually verified
+    // rather than send images to a model that will just ignore them.
+    const effectiveModel =
+      imageParts.length > 0 && !findModel(model)?.vision ? VERIFIED_VISION_MODEL : model;
 
     type ChatTurn = {
       role: string;
@@ -132,7 +138,13 @@ export class ChatThreadDO extends DurableObject<Env> {
         this.broadcast({ type: "delta", id: assistantId, content: chunk });
       }
     } catch (err) {
-      fullText = "Sorry, something went wrong generating a response.";
+      // Surface the real reason (e.g. "not available on the Workers Free
+      // plan") rather than a generic message -- not every one of the 30+
+      // catalog models is actually available on every account/plan tier,
+      // and the user needs to know that to pick a different one, not just
+      // that "something" failed.
+      const reason = err instanceof Error ? err.message : String(err);
+      fullText = `Couldn't get a response from this model: ${reason}`;
       console.error(
         JSON.stringify({
           message: "AI generation failed",
