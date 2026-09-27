@@ -1,13 +1,3 @@
-// Chosen file-format policy. Validated by file extension, not the
-// client-supplied Content-Type: browsers unreliably report MIME types for
-// some extensions (.md in particular often comes through as text/plain or
-// application/octet-stream), so the extension is the trustworthy signal and
-// the mimeType below is what we actually store/serve.
-//
-// Shared between worker/ and src/ -- both the Worker and the browser need
-// the exact same rules (server-side enforcement, client-side UX), and this
-// file has zero DOM or Workers-runtime-specific APIs, so there's no reason
-// to duplicate it across the two separate build pipelines.
 export type FileCategory = "image" | "document" | "data";
 
 export interface FileRule {
