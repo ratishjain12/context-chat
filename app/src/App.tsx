@@ -2,6 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { MessageSquarePlus, Paperclip, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
   Sidebar,
   SidebarContent,
   SidebarGroup,
@@ -180,6 +188,7 @@ function App() {
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
   const [isGenerating, setIsGenerating] = useState(false)
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL)
+  const [threadToDelete, setThreadToDelete] = useState<Thread | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
   const selectThread = useCallback(async (threadId: string) => {
@@ -280,10 +289,12 @@ function App() {
     selectThread(thread.id)
   }
 
-  const handleDeleteThread = async (threadId: string) => {
-    if (!confirm("Delete this thread? This can't be undone.")) {
+  const confirmDeleteThread = async () => {
+    if (!threadToDelete) {
       return
     }
+    const threadId = threadToDelete.id
+    setThreadToDelete(null)
 
     await fetch(`/api/threads/${threadId}`, { method: "DELETE" })
     const remaining = threads.filter((t) => t.id !== threadId)
@@ -351,10 +362,11 @@ function App() {
                     </SidebarMenuButton>
                     <SidebarMenuAction
                       showOnHover
+                      className="cursor-pointer"
                       aria-label={`Delete ${thread.title}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleDeleteThread(thread.id)
+                        setThreadToDelete(thread)
                       }}
                     >
                       <Trash2 />
@@ -443,6 +455,26 @@ function App() {
           </PromptInput>
         </div>
       </SidebarInset>
+
+      <Dialog open={!!threadToDelete} onOpenChange={(open) => !open && setThreadToDelete(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete thread?</DialogTitle>
+            <DialogDescription>
+              "{threadToDelete?.title}" and all its messages will be permanently deleted. This
+              can't be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setThreadToDelete(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDeleteThread}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </SidebarProvider>
   )
 }
