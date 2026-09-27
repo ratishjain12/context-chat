@@ -347,7 +347,7 @@ function App() {
                       isActive={thread.id === activeThreadId}
                       onClick={() => selectThread(thread.id)}
                     >
-                      {thread.title}
+                      <span>{thread.title}</span>
                     </SidebarMenuButton>
                     <SidebarMenuAction
                       showOnHover
