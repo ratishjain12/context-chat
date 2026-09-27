@@ -222,6 +222,51 @@ async function processAttachment(job: FileProcessingMessage, env: Env): Promise<
   );
 }
 
+// Files upload to R2 before the message that will reference them exists
+// (Step 4's upload-before-send flow) -- if the user never sends that
+// message, the attachment row (message_id NULL) and its R2 object, and for
+// long documents its Vectorize vectors, are orphaned. R2 lifecycle rules
+// can't express this: they only know object age + key prefix, not "is this
+// still unlinked in D1" -- so a scheduled job that knows our actual data
+// model is the right tool, not a bucket-level rule.
+const ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+
+async function cleanupOrphanedAttachments(env: Env): Promise<void> {
+  const cutoff = Date.now() - ORPHAN_GRACE_MS;
+  const { results } = await env.DB.prepare(
+    "SELECT id, r2_key, chunk_count FROM attachments WHERE message_id IS NULL AND created_at < ?"
+  )
+    .bind(cutoff)
+    .all<{ id: string; r2_key: string; chunk_count: number }>();
+
+  if (results.length === 0) {
+    console.log(JSON.stringify({ message: "no orphaned attachments to clean up" }));
+    return;
+  }
+
+  await env.UPLOADS.delete(results.map((r) => r.r2_key));
+
+  const vectorIds = results.flatMap((r) =>
+    Array.from({ length: r.chunk_count }, (_, i) => `${r.id}-${i}`)
+  );
+  if (vectorIds.length > 0) {
+    await env.VECTORIZE.deleteByIds(vectorIds);
+  }
+
+  const placeholders = results.map(() => "?").join(",");
+  await env.DB.prepare(`DELETE FROM attachments WHERE id IN (${placeholders})`)
+    .bind(...results.map((r) => r.id))
+    .run();
+
+  console.log(
+    JSON.stringify({
+      message: "cleaned up orphaned attachments",
+      count: results.length,
+      vectorsDeleted: vectorIds.length,
+    })
+  );
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -283,5 +328,9 @@ export default {
         message.retry();
       }
     }
+  },
+
+  async scheduled(_controller, env): Promise<void> {
+    await cleanupOrphanedAttachments(env);
   },
 } satisfies ExportedHandler<Env, FileProcessingMessage>;

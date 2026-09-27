@@ -65,6 +65,13 @@ export async function indexDocument(
     }))
   );
 
+  // Recorded so an orphan cleanup job can reconstruct exact vector ids
+  // (`${attachmentId}-0..chunks-1`) to delete later without having to
+  // enumerate the whole index.
+  await env.DB.prepare("UPDATE attachments SET chunk_count = ? WHERE id = ?")
+    .bind(chunks.length, attachmentId)
+    .run();
+
   return { mode: "embedded", chunks: chunks.length };
 }
 

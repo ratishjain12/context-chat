@@ -29,3 +29,7 @@ dist-ssr
 !.dev.vars.example
 .env*
 !.env.example
+
+# `wrangler r2 object get` writes fetched objects to a local file matching
+# the R2 key path when run from app/ -- these are throwaway debug artifacts.
+/threads/
