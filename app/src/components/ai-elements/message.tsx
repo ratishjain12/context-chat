@@ -14,9 +14,11 @@ import {
 import { cn } from "@/lib/utils";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
+import type { ComponentProps, HTMLAttributes, ReactElement, ReactNode } from "react";
+import { isValidElement } from "react";
+import { MermaidDiagram } from "@/components/ai-elements/mermaid-diagram";
 import {
   createContext,
   useCallback,
@@ -319,12 +321,32 @@ export type MessageResponseProps = HTMLAttributes<HTMLDivElement> & {
   children: string;
 };
 
+// `pre`'s child is always the `code` element react-markdown rendered for a
+// fenced block -- check its className for the fence's language tag
+// (```mermaid -> "language-mermaid") to hand mermaid blocks off to the
+// diagram renderer instead of the plain <pre><code> everything else gets.
+const markdownComponents: Components = {
+  pre({ children, ...props }) {
+    const codeElement = isValidElement<{ className?: string; children?: ReactNode }>(children)
+      ? children
+      : null;
+    const language = /language-(\w+)/.exec(codeElement?.props.className ?? "")?.[1];
+
+    if (language === "mermaid") {
+      return <MermaidDiagram chart={String(codeElement?.props.children).trim()} />;
+    }
+
+    return <pre {...props}>{children}</pre>;
+  },
+};
+
 // Trimmed re-add of the Streamdown-based renderer removed earlier -- that
 // pulled in Shiki (every language) and Mermaid (every diagram type)
 // unconditionally, ~1.5MB of JS, for a chat app with no markdown content
 // yet. react-markdown + remark-gfm covers bold/lists/tables/code fences at
-// a fraction of the size; syntax highlighting and diagram rendering can be
-// added later if a model response actually needs them.
+// a fraction of the size; Mermaid is lazy-loaded only for messages that
+// actually contain a ```mermaid fence (see mermaid-diagram.tsx), and syntax
+// highlighting for other languages can be added later if needed.
 export const MessageResponse = ({
   className,
   children,
@@ -338,7 +360,9 @@ export const MessageResponse = ({
     )}
     {...props}
   >
-    <Markdown remarkPlugins={[remarkGfm]}>{children}</Markdown>
+    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {children}
+    </Markdown>
   </div>
 );
 
