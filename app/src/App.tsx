@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { MessageSquarePlus, Paperclip, Trash2, X } from "lucide-react"
+import { Loader2, MessageSquarePlus, Paperclip, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -58,6 +58,7 @@ interface AttachmentInfo {
   mime_type: string
   size_bytes: number
   category: FileCategory
+  status: "pending" | "ready"
 }
 
 interface ChatMessage {
@@ -79,23 +80,80 @@ function socketUrl(threadId: string): string {
 // picked file to R2 as soon as it's added (not on send) -- the message that
 // will reference it doesn't exist yet, so attachments start unlinked and get
 // tied to a message id only once the chat message is actually sent.
+// Polling interval for pending (document/data) attachments -- extraction +
+// embedding takes a few seconds, this is just frequent enough to feel
+// responsive without hammering the endpoint.
+const ATTACHMENT_STATUS_POLL_MS = 1500
+
 function AttachmentBar({
   threadId,
   onChange,
+  onProcessingChange,
 }: {
   threadId: string
   onChange: (attachments: AttachmentInfo[]) => void
+  onProcessingChange: (isProcessing: boolean) => void
 }) {
   const { files, remove, openFileDialog } = usePromptInputAttachments()
   const uploaded = useRef(new Map<string, AttachmentInfo>())
   const uploading = useRef(new Set<string>())
+  const pollTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const [error, setError] = useState<string | null>(null)
+
+  const notifyProcessing = useCallback(() => {
+    const isProcessing =
+      uploading.current.size > 0 ||
+      [...uploaded.current.values()].some((a) => a.status === "pending")
+    onProcessingChange(isProcessing)
+  }, [onProcessingChange])
+
+  const pollAttachmentStatus = useCallback(
+    (fileId: string, attachmentId: string) => {
+      const tick = () => {
+        fetch(`/api/attachments/${attachmentId}/status`)
+          .then((res) => res.json())
+          .then((data: { status: AttachmentInfo["status"] }) => {
+            const current = uploaded.current.get(fileId)
+            if (!current) {
+              return // removed while we were polling
+            }
+            if (data.status === "ready") {
+              uploaded.current.set(fileId, { ...current, status: "ready" })
+              onChange([...uploaded.current.values()])
+              notifyProcessing()
+              return
+            }
+            pollTimers.current.set(fileId, setTimeout(tick, ATTACHMENT_STATUS_POLL_MS))
+          })
+          .catch(() => {
+            // Transient failure -- keep polling rather than leaving the user stuck.
+            pollTimers.current.set(fileId, setTimeout(tick, ATTACHMENT_STATUS_POLL_MS))
+          })
+      }
+      tick()
+    },
+    [onChange, notifyProcessing]
+  )
+
+  // Cancel any in-flight polling on unmount (e.g. switching threads).
+  useEffect(() => {
+    return () => {
+      for (const timer of pollTimers.current.values()) {
+        clearTimeout(timer)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const currentIds = new Set(files.map((f) => f.id))
     for (const id of uploaded.current.keys()) {
       if (!currentIds.has(id)) {
         uploaded.current.delete(id)
+        const timer = pollTimers.current.get(id)
+        if (timer) {
+          clearTimeout(timer)
+          pollTimers.current.delete(id)
+        }
       }
     }
 
@@ -113,6 +171,7 @@ function AttachmentBar({
       }
 
       uploading.current.add(file.id)
+      notifyProcessing()
 
       fetch(file.url)
         .then((res) => res.blob())
@@ -136,6 +195,9 @@ function AttachmentBar({
           setError(null)
           uploaded.current.set(file.id, attachment)
           onChange([...uploaded.current.values()])
+          if (attachment.status === "pending") {
+            pollAttachmentStatus(file.id, attachment.id)
+          }
         })
         .catch((err) => {
           setError(err instanceof Error ? err.message : `${filename}: upload failed`)
@@ -143,6 +205,7 @@ function AttachmentBar({
         })
         .finally(() => {
           uploading.current.delete(file.id)
+          notifyProcessing()
         })
     }
 
@@ -163,17 +226,21 @@ function AttachmentBar({
         >
           <Paperclip className="size-4" />
         </Button>
-        {files.map((file) => (
-          <span
-            key={file.id}
-            className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs"
-          >
-            {file.filename}
-            <button type="button" onClick={() => remove(file.id)} aria-label={`Remove ${file.filename}`}>
-              <X className="size-3" />
-            </button>
-          </span>
-        ))}
+        {files.map((file) => {
+          const isPending = uploading.current.has(file.id) || uploaded.current.get(file.id)?.status === "pending"
+          return (
+            <span
+              key={file.id}
+              className="flex items-center gap-1 rounded-full bg-secondary px-2 py-1 text-xs"
+            >
+              {isPending && <Loader2 className="size-3 animate-spin" />}
+              {file.filename}
+              <button type="button" onClick={() => remove(file.id)} aria-label={`Remove ${file.filename}`}>
+                <X className="size-3" />
+              </button>
+            </span>
+          )
+        })}
       </div>
       {error && <p className="px-1 text-xs text-destructive">{error}</p>}
     </div>
@@ -186,6 +253,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [connected, setConnected] = useState(false)
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
+  const [isAttachmentProcessing, setIsAttachmentProcessing] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL)
   const [threadToDelete, setThreadToDelete] = useState<Thread | null>(null)
@@ -317,7 +385,11 @@ function App() {
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = message.text.trim().length > 0
-    if ((!hasText && pendingAttachments.length === 0) || socketRef.current?.readyState !== WebSocket.OPEN) {
+    if (
+      (!hasText && pendingAttachments.length === 0) ||
+      isAttachmentProcessing ||
+      socketRef.current?.readyState !== WebSocket.OPEN
+    ) {
       return
     }
     socketRef.current.send(
@@ -434,7 +506,11 @@ function App() {
           >
             <PromptInputHeader>
               {activeThreadId && (
-                <AttachmentBar threadId={activeThreadId} onChange={setPendingAttachments} />
+                <AttachmentBar
+                  threadId={activeThreadId}
+                  onChange={setPendingAttachments}
+                  onProcessingChange={setIsAttachmentProcessing}
+                />
               )}
             </PromptInputHeader>
             <PromptInputBody>
@@ -449,7 +525,7 @@ function App() {
               </PromptInputTools>
               <PromptInputSubmit
                 status={!connected ? "submitted" : isGenerating ? "streaming" : "ready"}
-                disabled={!connected}
+                disabled={!connected || isAttachmentProcessing}
               />
             </PromptInputFooter>
           </PromptInput>

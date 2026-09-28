@@ -1,6 +1,7 @@
 import { ChatThreadDO } from "./chat-thread.js";
 import { ruleForFilename, type FileCategory } from "../shared/file-types.js";
 import { indexDocument, searchDocuments } from "./rag.js";
+import { extractPdfText, extractDocxText } from "./extract.js";
 
 export { ChatThreadDO };
 
@@ -15,12 +16,15 @@ interface Thread {
   updated_at: number;
 }
 
+type AttachmentStatus = "pending" | "ready";
+
 interface AttachmentInfo {
   id: string;
   filename: string;
   mime_type: string;
   size_bytes: number;
   category: FileCategory;
+  status: AttachmentStatus;
 }
 
 interface ThreadMessage {
@@ -98,7 +102,7 @@ async function getThreadMessages(threadId: string, env: Env): Promise<Response> 
       .bind(threadId)
       .all<ThreadMessage>(),
     env.DB.prepare(
-      "SELECT id, message_id, filename, mime_type, size_bytes, category FROM attachments WHERE thread_id = ? AND message_id IS NOT NULL"
+      "SELECT id, message_id, filename, mime_type, size_bytes, category, status FROM attachments WHERE thread_id = ? AND message_id IS NOT NULL"
     )
       .bind(threadId)
       .all<AttachmentInfo & { message_id: string }>(),
@@ -107,12 +111,13 @@ async function getThreadMessages(threadId: string, env: Env): Promise<Response> 
   for (const message of messages) {
     const forMessage = attachments.filter((a) => a.message_id === message.id);
     if (forMessage.length > 0) {
-      message.attachments = forMessage.map(({ id, filename, mime_type, size_bytes, category }) => ({
+      message.attachments = forMessage.map(({ id, filename, mime_type, size_bytes, category, status }) => ({
         id,
         filename,
         mime_type,
         size_bytes,
         category,
+        status,
       }));
     }
   }
@@ -127,6 +132,7 @@ interface Attachment {
   mime_type: string;
   size_bytes: number;
   category: FileCategory;
+  status: AttachmentStatus;
   created_at: number;
 }
 
@@ -173,16 +179,20 @@ async function uploadAttachment(
     httpMetadata: { contentType: rule.mimeType },
   });
 
+  // Images need no processing -- they go straight to the model as multimodal
+  // input (Step 7) and are usable immediately. Documents/data aren't usable
+  // until the extraction queue below finishes, so the frontend needs to be
+  // able to tell the two cases apart and wait on the latter.
+  const initialStatus: AttachmentStatus = rule.category === "image" ? "ready" : "pending";
+
   const attachment = await env.DB.prepare(
-    `INSERT INTO attachments (id, thread_id, r2_key, filename, mime_type, size_bytes, category)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     RETURNING id, thread_id, filename, mime_type, size_bytes, category, created_at`
+    `INSERT INTO attachments (id, thread_id, r2_key, filename, mime_type, size_bytes, category, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     RETURNING id, thread_id, filename, mime_type, size_bytes, category, status, created_at`
   )
-    .bind(id, threadId, r2Key, filename, rule.mimeType, object.size, rule.category)
+    .bind(id, threadId, r2Key, filename, rule.mimeType, object.size, rule.category, initialStatus)
     .first<Attachment>();
 
-  // Images need no processing -- they go straight to the model as multimodal
-  // input (Step 7). Only documents/data need the extraction pipeline.
   if (rule.category !== "image") {
     await env.FILE_QUEUE.send({
       attachmentId: id,
@@ -220,29 +230,65 @@ async function getAttachment(id: string, env: Env): Promise<Response> {
   });
 }
 
+// Polled by the frontend after upload -- documents/data aren't usable in a
+// chat message until the extraction queue flips this to "ready".
+async function getAttachmentStatus(id: string, env: Env): Promise<Response> {
+  const row = await env.DB.prepare("SELECT status FROM attachments WHERE id = ?")
+    .bind(id)
+    .first<{ status: AttachmentStatus }>();
+
+  if (!row) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  return Response.json({ status: row.status });
+}
+
+const DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+async function markAttachmentReady(attachmentId: string, env: Env): Promise<void> {
+  await env.DB.prepare("UPDATE attachments SET status = 'ready' WHERE id = ?").bind(attachmentId).run();
+}
+
 async function processAttachment(job: FileProcessingMessage, env: Env): Promise<void> {
   const object = await env.UPLOADS.get(job.r2Key);
   if (!object) {
     throw new Error(`R2 object not found: ${job.r2Key}`);
   }
 
-  // txt/md/csv are plain text already -- no parsing library needed.
-  // pdf/docx need a real extraction library; not implemented yet.
-  const isPlainText = job.mimeType === "text/plain" || job.mimeType === "text/markdown" || job.mimeType === "text/csv";
-
-  if (!isPlainText) {
+  let text: string;
+  if (job.mimeType === "text/plain" || job.mimeType === "text/markdown" || job.mimeType === "text/csv") {
+    text = await object.text();
+  } else if (job.mimeType === "application/pdf") {
+    text = await extractPdfText(new Uint8Array(await object.arrayBuffer()));
+  } else if (job.mimeType === DOCX_MIME_TYPE) {
+    text = extractDocxText(new Uint8Array(await object.arrayBuffer()));
+  } else {
     console.log(
       JSON.stringify({
-        message: "extraction not yet implemented for this format",
+        message: "extraction not supported for this format",
         attachmentId: job.attachmentId,
         mimeType: job.mimeType,
       })
     );
+    await markAttachmentReady(job.attachmentId, env);
     return;
   }
 
-  const text = await object.text();
+  if (!text.trim()) {
+    console.log(
+      JSON.stringify({
+        message: "no text extracted",
+        attachmentId: job.attachmentId,
+        mimeType: job.mimeType,
+      })
+    );
+    await markAttachmentReady(job.attachmentId, env);
+    return;
+  }
+
   const result = await indexDocument(env, job.attachmentId, job.threadId, text);
+  await markAttachmentReady(job.attachmentId, env);
   console.log(
     JSON.stringify({
       message: "indexed document",
@@ -335,6 +381,11 @@ export default {
         }
         return Response.json(await searchDocuments(env, threadId, query));
       }
+    }
+
+    const attachmentStatusMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/status$/);
+    if (attachmentStatusMatch && request.method === "GET") {
+      return getAttachmentStatus(attachmentStatusMatch[1], env);
     }
 
     const attachmentMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)$/);

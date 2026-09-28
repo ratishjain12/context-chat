@@ -18,7 +18,6 @@ const TITLE_MAX_LENGTH = 60;
 // dashboard step needed; a custom-named gateway would require one).
 const GATEWAY_ID = "default";
 const HISTORY_LIMIT = 20;
-const RAG_MATCH_THRESHOLD = 0.5;
 
 interface IncomingMessage {
   content: string;
@@ -291,11 +290,16 @@ export class ChatThreadDO extends DurableObject<Env> {
     }
 
     try {
+      // No score filter here -- searchDocuments is already scoped to this
+      // thread's own attachments (Vectorize filter: { threadId }), so
+      // there's no cross-document leakage to guard against. A broad
+      // meta-query like "explain each tool in this" has weak literal
+      // semantic overlap with the actual chunk text, so even the right
+      // chunks can score well below a fixed similarity threshold --
+      // dropping them there just means the model sees no context at all.
       const matches = await searchDocuments(this.env, threadId, query, 3);
       for (const match of matches) {
-        if (match.score >= RAG_MATCH_THRESHOLD) {
-          parts.push(match.text);
-        }
+        parts.push(match.text);
       }
     } catch {
       // Embedding/Vectorize hiccup -- fall back to whatever inline context
