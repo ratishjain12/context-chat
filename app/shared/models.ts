@@ -1,3 +1,5 @@
+import { EXTERNAL_MODELS } from "./external-models.js";
+
 export interface ModelOption {
   id: string;
   provider: string;
@@ -12,7 +14,7 @@ export interface ModelOption {
 
 export const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-export const MODELS: ModelOption[] = [
+export const WORKERS_AI_MODELS: ModelOption[] = [
   {
     "id": "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
     "provider": "aisingapore",
@@ -344,6 +346,12 @@ export const MODELS: ModelOption[] = [
     "vision": true
   }
 ];
+
+export const MODELS: ModelOption[] = [...EXTERNAL_MODELS, ...WORKERS_AI_MODELS];
+
+export function isWorkersAIModel(id: string): boolean {
+  return id.startsWith("@cf/");
+}
 
 export function isValidModel(id: string): boolean {
   return MODELS.some((m) => m.id === id);

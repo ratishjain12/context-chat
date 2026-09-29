@@ -38,6 +38,10 @@
 			{
 				"name": "CHAT_THREAD",
 				"class_name": "ChatThreadDO"
+			},
+			{
+				"name": "PROVIDER_HEALTH",
+				"class_name": "ProviderHealthDO"
 			}
 		]
 	},
@@ -69,6 +73,12 @@
 			"tag": "v1",
 			"new_sqlite_classes": [
 				"ChatThreadDO"
+			]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": [
+				"ProviderHealthDO"
 			]
 		}
 	],

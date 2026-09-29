@@ -44,6 +44,7 @@ import {
 import { ModelPicker } from "@/components/model-picker"
 import { ACCEPTED_MIME_TYPES, ruleForFilename, type FileCategory } from "@shared/file-types"
 import { DEFAULT_MODEL } from "@shared/models"
+import { resolveModel } from "@shared/model-routing"
 
 interface Thread {
   id: string
@@ -67,8 +68,14 @@ interface ChatMessage {
   role: "user" | "assistant" | "system"
   content: string
   model?: string | null
+  requested_model?: string | null
+  fallback_reason?: string | null
   created_at: number
   attachments?: AttachmentInfo[]
+}
+
+function shortModelName(id: string): string {
+  return id.split("/").pop() ?? id
 }
 
 function socketUrl(threadId: string): string {
@@ -76,14 +83,10 @@ function socketUrl(threadId: string): string {
   return `${protocol}//${location.host}/api/threads/${threadId}/ws`
 }
 
-// Lives inside <PromptInput> to reach its attachment context. Uploads each
-// picked file to R2 as soon as it's added (not on send) -- the message that
-// will reference it doesn't exist yet, so attachments start unlinked and get
-// tied to a message id only once the chat message is actually sent.
-// Polling interval for pending (document/data) attachments -- extraction +
-// embedding takes a few seconds, this is just frequent enough to feel
-// responsive without hammering the endpoint.
 const ATTACHMENT_STATUS_POLL_MS = 1500
+
+// Lives inside <PromptInput> to reach its attachment context. Uploads on add,
+// not on send: attachments start unlinked and are tied to a message on send.
 
 function AttachmentBar({
   threadId,
@@ -126,7 +129,6 @@ function AttachmentBar({
             pollTimers.current.set(fileId, setTimeout(tick, ATTACHMENT_STATUS_POLL_MS))
           })
           .catch(() => {
-            // Transient failure -- keep polling rather than leaving the user stuck.
             pollTimers.current.set(fileId, setTimeout(tick, ATTACHMENT_STATUS_POLL_MS))
           })
       }
@@ -135,7 +137,6 @@ function AttachmentBar({
     [onChange, notifyProcessing]
   )
 
-  // Cancel any in-flight polling on unmount (e.g. switching threads).
   useEffect(() => {
     return () => {
       for (const timer of pollTimers.current.values()) {
@@ -255,17 +256,26 @@ function App() {
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentInfo[]>([])
   const [isAttachmentProcessing, setIsAttachmentProcessing] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL)
+  const [preferredModel, setPreferredModel] = useState(DEFAULT_MODEL)
   const [threadToDelete, setThreadToDelete] = useState<Thread | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
 
+  // Derived, so removing the image restores the user's own pick.
+  const needsVision = pendingAttachments.some((a) => a.category === "image")
+  const selectedModel = resolveModel(preferredModel, { vision: needsVision })
+
   const selectThread = useCallback(async (threadId: string) => {
     setActiveThreadId(threadId)
+    setIsGenerating(false)
     const res = await fetch(`/api/threads/${threadId}/messages`)
-    setMessages(await res.json())
+    const history: ChatMessage[] = await res.json()
+    // Keep an in-progress reply the socket already delivered (not in D1 yet).
+    setMessages((prev) => {
+      const persisted = new Set(history.map((m) => m.id))
+      return [...history, ...prev.filter((m) => m.thread_id === threadId && !persisted.has(m.id))]
+    })
   }, [])
 
-  // Load the thread list once; auto-create the first thread if there are none.
   useEffect(() => {
     fetch("/api/threads")
       .then((res) => res.json())
@@ -282,7 +292,6 @@ function App() {
       })
   }, [selectThread])
 
-  // Open a WebSocket to the active thread; tear it down on thread switch/unmount.
   useEffect(() => {
     if (!activeThreadId) {
       return
@@ -297,6 +306,7 @@ function App() {
       const data:
         | { type: "message"; message: ChatMessage }
         | { type: "delta"; id: string; content: string }
+        | { type: "in_progress"; id: string; content: string }
         | { type: "thread_title"; threadId: string; title: string } = JSON.parse(event.data)
 
       if (data.type === "thread_title") {
@@ -306,7 +316,7 @@ function App() {
         return
       }
 
-      if (data.type === "delta") {
+      if (data.type === "delta" || data.type === "in_progress") {
         setIsGenerating(true)
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === data.id)
@@ -323,7 +333,9 @@ function App() {
             ]
           }
           const next = [...prev]
-          next[idx] = { ...next[idx], content: next[idx].content + data.content }
+          // in_progress is the full text so far (sent on reconnect); delta appends.
+          const content = data.type === "in_progress" ? data.content : next[idx].content + data.content
+          next[idx] = { ...next[idx], content }
           return next
         })
         return
@@ -473,7 +485,9 @@ function App() {
                     {message.content && <MessageResponse>{message.content}</MessageResponse>}
                     {message.model && (
                       <span className="text-xs text-muted-foreground">
-                        {message.model.split("/").pop()}
+                        {message.fallback_reason && message.requested_model
+                          ? `${shortModelName(message.requested_model)} → ${shortModelName(message.model)} · ${message.fallback_reason}`
+                          : shortModelName(message.model)}
                       </span>
                     )}
                     {message.attachments?.map((attachment) => (
@@ -521,7 +535,16 @@ function App() {
             </PromptInputBody>
             <PromptInputFooter>
               <PromptInputTools>
-                <ModelPicker value={selectedModel} onChange={setSelectedModel} />
+                <ModelPicker
+                  value={selectedModel}
+                  onChange={setPreferredModel}
+                  requireVision={needsVision}
+                />
+                {selectedModel !== preferredModel && (
+                  <span className="text-xs text-muted-foreground">
+                    Switched: {shortModelName(preferredModel)} can't read images
+                  </span>
+                )}
               </PromptInputTools>
               <PromptInputSubmit
                 status={!connected ? "submitted" : isGenerating ? "streaming" : "ready"}

@@ -1,12 +1,11 @@
 import { ChatThreadDO } from "./chat-thread.js";
+import { ProviderHealthDO } from "./provider-health.js";
 import { ruleForFilename, type FileCategory } from "../shared/file-types.js";
 import { indexDocument, searchDocuments } from "./rag.js";
 import { extractPdfText, extractDocxText } from "./extract.js";
 
-export { ChatThreadDO };
+export { ChatThreadDO, ProviderHealthDO };
 
-// TODO(step 8 - Access): replace with the authenticated user's id from the
-// Cf-Access-Jwt-Assertion header instead of a hardcoded dev user.
 const DEV_USER_ID = "dev-user";
 
 interface Thread {
@@ -97,7 +96,7 @@ async function deleteThread(threadId: string, env: Env): Promise<Response> {
 async function getThreadMessages(threadId: string, env: Env): Promise<Response> {
   const [{ results: messages }, { results: attachments }] = await Promise.all([
     env.DB.prepare(
-      "SELECT id, thread_id, role, content, model, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
+      "SELECT id, thread_id, role, content, model, requested_model, fallback_reason, created_at FROM messages WHERE thread_id = ? ORDER BY created_at"
     )
       .bind(threadId)
       .all<ThreadMessage>(),

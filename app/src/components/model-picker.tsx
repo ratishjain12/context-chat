@@ -11,7 +11,7 @@ import {
   CommandList,
 } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { MODELS, findModel, type ModelOption } from "@shared/models"
+import { MODELS, findModel, isWorkersAIModel, type ModelOption } from "@shared/models"
 
 function keywordsFor(model: ModelOption): string[] {
   const keywords = [model.provider]
@@ -21,10 +21,8 @@ function keywordsFor(model: ModelOption): string[] {
   return keywords
 }
 
-// Ranks a match on the model's own id (e.g. "glm" -> glm-5.3-flash) above a
-// match that only hits its keywords. Sorted ourselves with shouldFilter=false
-// on <Command> -- cmdk's own group/item DOM reordering on score turned out
-// unreliable in practice, so we compute the order and just render that.
+// Id matches outrank keyword matches. Sorted here (shouldFilter=false) because
+// cmdk's own score-based DOM reordering was unreliable.
 function scoreModel(model: ModelOption, search: string): number {
   const idScore = defaultFilter(model.id, search)
   if (idScore > 0) {
@@ -51,10 +49,17 @@ function formatContext(contextWindow: number | null): string | null {
   return contextWindow >= 1000 ? `${Math.round(contextWindow / 1000)}K ctx` : `${contextWindow} ctx`
 }
 
-const groups = MODELS.reduce<Record<string, ModelOption[]>>((acc, model) => {
-  ;(acc[model.provider] ??= []).push(model)
-  return acc
-}, {})
+// Workers AI has its own "openai"/"google" authors (gpt-oss, gemma).
+function groupHeading(model: ModelOption): string {
+  return isWorkersAIModel(model.id) ? `Workers AI · ${model.provider}` : model.provider
+}
+
+function groupModels(models: ModelOption[]): Record<string, ModelOption[]> {
+  return models.reduce<Record<string, ModelOption[]>>((acc, model) => {
+    ;(acc[groupHeading(model)] ??= []).push(model)
+    return acc
+  }, {})
+}
 
 function ModelRow({ model, onSelect }: { model: ModelOption; onSelect: () => void }) {
   return (
@@ -83,29 +88,34 @@ function ModelRow({ model, onSelect }: { model: ModelOption; onSelect: () => voi
 export function ModelPicker({
   value,
   onChange,
+  requireVision = false,
 }: {
   value: string
   onChange: (id: string) => void
+  requireVision?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState("")
   const listRef = useRef<HTMLDivElement>(null)
   const current = findModel(value)
 
+  const available = useMemo(
+    () => (requireVision ? MODELS.filter((model) => model.vision) : MODELS),
+    [requireVision]
+  )
+  const groups = useMemo(() => groupModels(available), [available])
+
   const searchResults = useMemo(() => {
     if (!search.trim()) {
       return null
     }
-    return MODELS.map((model) => ({ model, score: scoreModel(model, search) }))
+    return available.map((model) => ({ model, score: scoreModel(model, search) }))
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)
       .map((entry) => entry.model)
-  }, [search])
+  }, [search, available])
 
-  // The results list is the same scrollable DOM node across re-renders, so
-  // without this it stays scrolled wherever the previous (longer) result
-  // set left it -- the new top match ends up above the fold instead of
-  // visible right away.
+  // Same scroll container across searches -- reset so the top match is visible.
   useEffect(() => {
     listRef.current?.querySelector("[cmdk-list]")?.scrollTo({ top: 0 })
   }, [search, open])
@@ -131,6 +141,7 @@ export function ModelPicker({
           size="sm"
           className="gap-1.5 text-muted-foreground"
         >
+          {requireVision && <Eye className="size-3.5" />}
           {current ? shortName(current.id) : value}
           <ChevronsUpDown className="size-3.5" />
         </Button>
@@ -138,6 +149,12 @@ export function ModelPicker({
       <PopoverContent side="top" align="start" className="w-96 p-0" ref={listRef}>
         <Command shouldFilter={false}>
           <CommandInput placeholder="Search models..." value={search} onValueChange={setSearch} />
+          {requireVision && (
+            <p className="flex items-center gap-1.5 border-b border-border px-3 py-2 text-xs text-muted-foreground">
+              <Eye className="size-3.5" />
+              Showing models that can read the attached images
+            </p>
+          )}
           <CommandList>
             <CommandEmpty>No models found.</CommandEmpty>
             {searchResults ? (
